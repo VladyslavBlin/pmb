@@ -1,0 +1,208 @@
+"""
+Workspace — изолированное хранилище памяти per-project.
+
+Detection priority:
+1. PMB_WORKSPACE env variable (explicit override)
+2. .pmb/workspace.yaml в проекте
+3. git remote (хеш) если есть .git
+4. cwd path (хеш)
+5. "default"
+
+Storage: ~/.pmb/workspaces/{workspace_id}/
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import subprocess
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+import yaml
+
+DEFAULT_PMB_HOME = Path.home() / ".pmb"
+
+
+def _hash_short(s: str, length: int = 12) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:length]
+
+
+def _git_remote(path: Path) -> Optional[str]:
+    """Получить URL git remote origin, если репо."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
+def _git_root(path: Path) -> Optional[Path]:
+    """Найти корень git репо."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            return Path(result.stdout.strip())
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
+@dataclass
+class Workspace:
+    """Изолированный workspace для одного проекта."""
+
+    id: str
+    name: str
+    root: Path
+    pmb_home: Path = field(default_factory=lambda: DEFAULT_PMB_HOME)
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    )
+    source: str = "auto"  # "env" | "config" | "git" | "cwd" | "explicit"
+
+    @property
+    def storage_dir(self) -> Path:
+        return self.pmb_home / "workspaces" / self.id
+
+    @property
+    def db_path(self) -> Path:
+        return self.storage_dir / "events.sqlite"
+
+    @property
+    def vector_path(self) -> Path:
+        return self.storage_dir / "vectors.lance"
+
+    @property
+    def meta_path(self) -> Path:
+        return self.storage_dir / "meta.yaml"
+
+    def ensure_dirs(self):
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_meta(self):
+        self.ensure_dirs()
+        with open(self.meta_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump({
+                "id": self.id,
+                "name": self.name,
+                "root": str(self.root),
+                "created_at": self.created_at,
+                "source": self.source,
+            }, f, allow_unicode=True)
+
+    @classmethod
+    def load_meta(cls, storage_dir: Path, pmb_home: Path) -> "Workspace":
+        meta_file = storage_dir / "meta.yaml"
+        with open(meta_file, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            root=Path(data["root"]),
+            pmb_home=pmb_home,
+            created_at=data["created_at"],
+            source=data.get("source", "config"),
+        )
+
+
+def detect_workspace(
+    cwd: Optional[Path] = None,
+    pmb_home: Optional[Path] = None,
+    explicit_id: Optional[str] = None,
+) -> Workspace:
+    """
+    Определить или создать workspace для текущей директории.
+
+    Detection priority:
+    1. explicit_id (если передан)
+    2. env var PMB_WORKSPACE
+    3. .pmb/workspace.yaml в cwd или родителях
+    4. git remote URL
+    5. git root path
+    6. cwd path
+    """
+    cwd = cwd or Path.cwd()
+    pmb_home = pmb_home or Path(os.environ.get("PMB_HOME", DEFAULT_PMB_HOME))
+
+    # 1. Explicit
+    if explicit_id:
+        return _build_workspace(explicit_id, str(cwd), cwd, pmb_home, "explicit")
+
+    # 2. Env var
+    env_ws = os.environ.get("PMB_WORKSPACE")
+    if env_ws:
+        return _build_workspace(env_ws, str(cwd), cwd, pmb_home, "env")
+
+    # 3. Local config (.pmb/workspace.yaml)
+    p = cwd
+    for _ in range(10):
+        config = p / ".pmb" / "workspace.yaml"
+        if config.exists():
+            with open(config, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            return _build_workspace(
+                data["id"],
+                data.get("name", data["id"]),
+                p,
+                pmb_home,
+                "config",
+            )
+        if p.parent == p:
+            break
+        p = p.parent
+
+    # 4. Git remote
+    remote = _git_remote(cwd)
+    if remote:
+        ws_id = _hash_short(f"git:{remote}")
+        ws_name = remote.rsplit("/", 1)[-1].replace(".git", "")
+        root = _git_root(cwd) or cwd
+        return _build_workspace(ws_id, ws_name, root, pmb_home, "git")
+
+    # 5. Git root path
+    root = _git_root(cwd)
+    if root:
+        ws_id = _hash_short(f"path:{root}")
+        return _build_workspace(ws_id, root.name, root, pmb_home, "git")
+
+    # 6. cwd path
+    ws_id = _hash_short(f"path:{cwd.resolve()}")
+    return _build_workspace(ws_id, cwd.name, cwd, pmb_home, "cwd")
+
+
+def _build_workspace(ws_id: str, name: str, root: Path, pmb_home: Path, source: str) -> Workspace:
+    storage = pmb_home / "workspaces" / ws_id
+    if (storage / "meta.yaml").exists():
+        # Existing workspace — load preserved metadata
+        ws = Workspace.load_meta(storage, pmb_home)
+        return ws
+    ws = Workspace(id=ws_id, name=name, root=root, pmb_home=pmb_home, source=source)
+    return ws
+
+
+def list_workspaces(pmb_home: Optional[Path] = None) -> list[Workspace]:
+    """Список всех существующих workspaces."""
+    pmb_home = pmb_home or DEFAULT_PMB_HOME
+    ws_dir = pmb_home / "workspaces"
+    if not ws_dir.exists():
+        return []
+    out = []
+    for d in ws_dir.iterdir():
+        meta = d / "meta.yaml"
+        if meta.exists():
+            try:
+                out.append(Workspace.load_meta(d, pmb_home))
+            except Exception:
+                continue
+    return out

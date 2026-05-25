@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+title: PMB — Personal Memory Brain
+message: >-
+  If you use PMB in published research or build on top of it,
+  please cite this software.
+type: software
+authors:
+  - name: PMB contributors
+repository-code: https://github.com/yourname/pmb
+abstract: >-
+  Local-first persistent memory for AI coding agents over MCP.
+  91.6% evidence-recall@10 on LoCoMo, 90-200ms p50 latency,
+  no API keys required.
+keywords:
+  - mcp
+  - memory
+  - retrieval
+  - ai-agent
+  - rag
+license: MIT
+version: 0.1.0

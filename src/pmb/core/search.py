@@ -1,0 +1,639 @@
+"""
+Hybrid Search — BM25 + dense vector retrieval.
+
+Стратегия:
+- Embeddings: sentence-transformers (локально)
+- BM25: rank-bm25
+- Fusion: weighted normalized scores (default 50/50)
+- Ranking signals: similarity + importance + recency
+
+Storage:
+- Vectors в LanceDB (ulid → embedding)
+- BM25 — in-memory rebuild on cold start (быстро, ~100-1000 events)
+"""
+
+from __future__ import annotations
+
+import pickle
+import re
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
+
+import numpy as np
+from rank_bm25 import BM25Okapi
+
+
+# Bump when the on-disk pickle layout becomes incompatible
+_BM25_CACHE_VERSION = 2
+
+# Heavy deps loaded lazily — importing them at module top makes any CLI
+# command cold-start in 30-60s on Windows even when no search is needed.
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer  # noqa
+
+# Default multilingual embedding model — handles 50+ languages including
+# English, Russian, Spanish, Chinese, etc. Cross-lingual recall works: a
+# Russian query matches an English memory and vice versa.
+#
+# Model size: ~120 MB (vs 80 MB for English-only). One-time download.
+# Speed: ~5% slower than English-only on CPU. Negligible.
+#
+# Why not e5 / bge multilingual? Those are 200-500 MB. This balances quality
+# vs disk footprint. Users who want stronger models can override via:
+#   pmb config embedding.model_name "intfloat/multilingual-e5-base"
+#
+# IMPORTANT: changing the model after events are indexed requires re-encoding
+# (run `pmb reindex`). Different models produce incompatible vectors.
+DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_MODEL_ENGLISH_ONLY = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"  # ~80 MB, ~50ms/25 pairs CPU
+EMBED_DIM = 384
+
+
+def _lancedb():
+    import lancedb  # local import — first call pays the cost
+    return lancedb
+
+
+def _SentenceTransformer():
+    from sentence_transformers import SentenceTransformer
+    return SentenceTransformer
+
+
+def _CrossEncoder():
+    from sentence_transformers import CrossEncoder
+    return CrossEncoder
+
+
+def _TextEmbeddingFE():
+    """Lazy import of fastembed.TextEmbedding."""
+    from fastembed import TextEmbedding
+    return TextEmbedding
+
+
+class _FastEmbedAdapter:
+    """Make fastembed.TextEmbedding look like a sentence-transformers model.
+
+    sentence-transformers offers `.encode(text|texts) -> np.ndarray`.
+    fastembed offers `.embed(texts) -> generator of np.ndarray`. We wrap
+    it so the rest of HybridSearch doesn't need to know the difference.
+    """
+
+    def __init__(self, model_name: str):
+        # Default fastembed model id maps the same MiniLM weights via ONNX.
+        TextEmbedding = _TextEmbeddingFE()
+        self._impl = TextEmbedding(model_name=model_name)
+
+    def encode(self, texts, show_progress_bar=False, batch_size: int = 32):
+        if isinstance(texts, str):
+            single = True
+            inputs = [texts]
+        else:
+            single = False
+            inputs = list(texts)
+        vecs = list(self._impl.embed(inputs, batch_size=batch_size))
+        arr = np.stack(vecs).astype(np.float32) if vecs else np.zeros(
+            (0, EMBED_DIM), dtype=np.float32,
+        )
+        return arr[0] if single else arr
+
+
+@dataclass
+class SearchHit:
+    ulid: str
+    score: float
+    bm25_score: float
+    vec_score: float
+    importance: float
+    recency_score: float
+
+
+def tokenize(text: str) -> list[str]:
+    """Простой токенизатор. Сохраняет аббревиатуры через case-folding."""
+    return re.findall(r"\w+", text.lower())
+
+
+def normalize(scores: np.ndarray) -> np.ndarray:
+    """Min-max в [0, 1]."""
+    if len(scores) == 0:
+        return scores
+    lo, hi = float(scores.min()), float(scores.max())
+    if hi - lo < 1e-10:
+        return np.zeros_like(scores, dtype=np.float32)
+    return ((scores - lo) / (hi - lo)).astype(np.float32)
+
+
+def cosine_similarity(q: np.ndarray, m: np.ndarray) -> np.ndarray:
+    """Cosine similarity между q (1d) и m (2d)."""
+    if len(m) == 0:
+        return np.array([], dtype=np.float32)
+    q_norm = q / (np.linalg.norm(q) + 1e-10)
+    m_norm = m / (np.linalg.norm(m, axis=1, keepdims=True) + 1e-10)
+    return np.dot(m_norm, q_norm).astype(np.float32)
+
+
+class _ModelCache:
+    """Глобальный кэш embedding-модели. Supports both backends."""
+
+    _model = None  # type: ignore[var-annotated]
+    _name: Optional[str] = None
+    _backend: Optional[str] = None
+
+    @classmethod
+    def get(
+        cls, model_name: str = DEFAULT_MODEL,
+        backend: str = "sentence-transformers",
+    ):
+        if (cls._model is None
+                or cls._name != model_name
+                or cls._backend != backend):
+            if backend == "fastembed":
+                cls._model = _FastEmbedAdapter(model_name)
+            else:
+                cls._model = _SentenceTransformer()(model_name)
+            cls._name = model_name
+            cls._backend = backend
+        return cls._model
+
+
+class _CrossEncoderCache:
+    """Глобальный кэш cross-encoder реранкера. Отдельный от embedder'а."""
+
+    _model = None  # type: ignore[var-annotated]
+    _name: Optional[str] = None
+
+    @classmethod
+    def get(cls, model_name: str = DEFAULT_RERANK_MODEL):
+        if cls._model is None or cls._name != model_name:
+            cls._model = _CrossEncoder()(model_name)
+            cls._name = model_name
+        return cls._model
+
+
+class HybridSearch:
+    """
+    Hybrid index: BM25 + vector search.
+
+    Lifecycle:
+      add(ulid, text) — добавить документ
+      build() — пересобрать BM25 (вызвать после bulk add)
+      search(query, top_k) — найти
+
+    Vectors хранятся в LanceDB (persistent), BM25 — в памяти (rebuild on init).
+    """
+
+    def __init__(
+        self,
+        vector_path: Path,
+        model_name: str = DEFAULT_MODEL,
+        bm25_weight: float = 0.5,
+        rerank_model_name: Optional[str] = None,
+        embedding_backend: str = "sentence-transformers",
+    ):
+        self.vector_path = vector_path
+        self.model_name = model_name
+        self.bm25_weight = bm25_weight
+        self.vec_weight = 1.0 - bm25_weight
+        self.embedding_backend = embedding_backend
+        # Reranker is fully opt-in — None disables it entirely (no load)
+        self.rerank_model_name = rerank_model_name
+
+        # Model is lazy — avoid the 1-3s load for CLI commands that never embed
+        # (stats, list, pin, forget, session, schedule, workspaces, doctor).
+        self._model = None
+        self._reranker = None
+
+        # LanceDB connection (lazy import — torch/lancedb dominate cold start)
+        self.vector_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lance = _lancedb().connect(str(self.vector_path))
+        self._table = self._open_or_create_table()
+
+        # BM25 (in-memory)
+        self._bm25: Optional[BM25Okapi] = None
+        self._bm25_ulids: list[str] = []
+        self._bm25_tokens: list[list[str]] = []
+
+    def _open_or_create_table(self):
+        # Newer lancedb exposes list_tables() returning a response object with
+        # a `.tables` attribute; older versions only have table_names().
+        existing: list[str] = []
+        used_modern = False
+        if hasattr(self._lance, "list_tables"):
+            try:
+                resp = self._lance.list_tables()
+                existing = list(getattr(resp, "tables", resp) or [])
+                used_modern = True
+            except Exception:
+                used_modern = False
+        if not used_modern and hasattr(self._lance, "table_names"):
+            existing = list(self._lance.table_names() or [])
+        if "events" in existing:
+            return self._lance.open_table("events")
+        # Create empty table with proper schema
+        empty_data = [{
+            "ulid": "_init",
+            "vector": np.zeros(EMBED_DIM, dtype=np.float32).tolist(),
+            "text": "",
+        }]
+        tbl = self._lance.create_table("events", data=empty_data)
+        # Удаляем dummy row
+        tbl.delete("ulid = '_init'")
+        return tbl
+
+    @property
+    def model(self):
+        """Lazy embedding-model accessor (first call loads ~80MB)."""
+        if self._model is None:
+            self._model = _ModelCache.get(self.model_name, self.embedding_backend)
+        return self._model
+
+    def is_ready(self) -> bool:
+        """True if the embedding model is loaded into memory and ready.
+
+        Improvement W: callers can use this to decide between inline embed
+        (fast) and deferred-async embed (write SQLite now, embed later).
+        """
+        return self._model is not None
+
+    @property
+    def reranker(self):
+        """Lazy cross-encoder accessor; returns None if reranker disabled."""
+        if not self.rerank_model_name:
+            return None
+        if self._reranker is None:
+            self._reranker = _CrossEncoderCache.get(self.rerank_model_name)
+        return self._reranker
+
+    def rerank(self, query: str, hits: list["SearchHit"],
+               text_for_ulid) -> list["SearchHit"]:
+        """
+        Re-score `hits` using the cross-encoder, return them sorted desc by score.
+
+        `text_for_ulid(ulid) -> str` should return the indexable text of an
+        event (callers usually pass `lambda u: events.get_by_ulid(u).to_text()`
+        or use an already-built map).
+
+        If the reranker isn't configured, returns hits unchanged. If only one
+        hit is given, returns it unchanged (nothing to reorder).
+        """
+        if self.reranker is None or len(hits) <= 1:
+            return hits
+        pairs: list[tuple[str, str]] = []
+        for h in hits:
+            try:
+                text = text_for_ulid(h.ulid) or ""
+            except Exception:
+                text = ""
+            pairs.append((query, text[:512]))  # cap each side for speed
+        try:
+            scores = self.reranker.predict(pairs, show_progress_bar=False)
+        except Exception:
+            # Never fail recall because reranker tripped
+            return hits
+        # The CrossEncoder returns logits; higher = more relevant. Update score
+        # field so callers can see the new ordering basis.
+        rescored: list[SearchHit] = []
+        for h, s in zip(hits, scores):
+            rescored.append(SearchHit(
+                ulid=h.ulid, score=float(s),
+                bm25_score=h.bm25_score, vec_score=h.vec_score,
+                importance=h.importance, recency_score=h.recency_score,
+            ))
+        rescored.sort(key=lambda x: -x.score)
+        return rescored
+
+    def embed(self, text: str) -> np.ndarray:
+        return self.model.encode([text], show_progress_bar=False)[0].astype(np.float32)
+
+    def embed_batch(self, texts: list[str]) -> np.ndarray:
+        if not texts:
+            return np.zeros((0, EMBED_DIM), dtype=np.float32)
+        return self.model.encode(texts, show_progress_bar=False, batch_size=32).astype(np.float32)
+
+    def add(self, ulid: str, text: str) -> None:
+        """Добавить один документ. Не пересобирает BM25 — вызови build() после batch."""
+        emb = self.embed(text)
+        self._table.add([{
+            "ulid": ulid,
+            "vector": emb.tolist(),
+            "text": text,
+        }])
+        # Append into BM25 in-memory state
+        self._bm25_ulids.append(ulid)
+        self._bm25_tokens.append(tokenize(text))
+        self._bm25 = None  # invalidate, rebuild on next search
+        self._save_bm25_cache()
+
+    def add_batch(self, items: list[tuple[str, str]]) -> None:
+        if not items:
+            return
+        texts = [t for _, t in items]
+        embs = self.embed_batch(texts)
+        rows = [
+            {"ulid": ulid, "vector": emb.tolist(), "text": text}
+            for (ulid, text), emb in zip(items, embs)
+        ]
+        self._table.add(rows)
+        for ulid, text in items:
+            self._bm25_ulids.append(ulid)
+            self._bm25_tokens.append(tokenize(text))
+        self._bm25 = None
+        self._save_bm25_cache()
+
+    def remove(self, ulid: str) -> None:
+        self._table.delete(f"ulid = '{ulid}'")
+        if ulid in self._bm25_ulids:
+            idx = self._bm25_ulids.index(ulid)
+            self._bm25_ulids.pop(idx)
+            self._bm25_tokens.pop(idx)
+            self._bm25 = None
+            self._save_bm25_cache()
+
+    def reindex_all(self, events_iter, batch_size: int = 64) -> int:
+        """Re-embed all events with the current model. Use when switching
+        embedding models (e.g. English-only → multilingual).
+
+        Args:
+          events_iter: iterable of Event objects (from engine.events.list_active)
+          batch_size: how many to embed at once
+
+        Returns: number of events re-encoded.
+        """
+        # Drop all vectors — table will be repopulated
+        try:
+            self._table.delete("ulid IS NOT NULL")  # drop all
+        except Exception:
+            pass
+        # Reset BM25 state
+        self._bm25_ulids = []
+        self._bm25_tokens = []
+        self._bm25 = None
+
+        n = 0
+        batch: list[tuple[str, str]] = []
+        for ev in events_iter:
+            text = ev.to_text() if hasattr(ev, "to_text") else (ev.content or "")
+            batch.append((ev.ulid, text))
+            if len(batch) >= batch_size:
+                self.add_batch(batch)
+                n += len(batch)
+                batch.clear()
+        if batch:
+            self.add_batch(batch)
+            n += len(batch)
+        return n
+
+    @property
+    def _bm25_cache_path(self) -> Path:
+        return self.vector_path.parent / "bm25_index.pkl"
+
+    def _save_bm25_cache(self) -> None:
+        """Persist BM25 state — both tokens AND the fitted BM25Okapi.
+
+        Storing the fitted index (not just tokens) lets cold-start skip the
+        BM25 rebuild on the first search. For 5000+ events this saves
+        100-300ms per CLI invocation. We always serialise the tokens too in
+        case BM25Okapi unpickling fails on a different rank_bm25 version —
+        the loader will rebuild from tokens.
+        """
+        try:
+            payload = {
+                "version": _BM25_CACHE_VERSION,
+                "ulids": self._bm25_ulids,
+                "tokens": self._bm25_tokens,
+                "fitted": self._bm25,  # may be None if not yet built
+            }
+            tmp = self._bm25_cache_path.with_suffix(".pkl.tmp")
+            with open(tmp, "wb") as f:
+                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+            tmp.replace(self._bm25_cache_path)
+        except Exception:
+            # Cache is purely a perf hint; never fail writes because of it
+            pass
+
+    def _load_bm25_cache(self) -> bool:
+        p = self._bm25_cache_path
+        if not p.exists():
+            return False
+        try:
+            with open(p, "rb") as f:
+                payload = pickle.load(f)
+            if payload.get("version") != _BM25_CACHE_VERSION:
+                return False
+            self._bm25_ulids = list(payload["ulids"])
+            self._bm25_tokens = list(payload["tokens"])
+            # `fitted` is optional — if absent or unpickling fails for some
+            # reason, _ensure_bm25() rebuilds from tokens at first search.
+            fitted = payload.get("fitted")
+            if isinstance(fitted, BM25Okapi):
+                self._bm25 = fitted
+            else:
+                self._bm25 = None
+            return True
+        except Exception:
+            return False
+
+    def reload_bm25(self) -> None:
+        """
+        Restore BM25 state. Tries the on-disk pickle first (cheap), falls back
+        to a full LanceDB scan if the cache is missing or corrupt.
+        """
+        if self._load_bm25_cache():
+            return
+        try:
+            tbl = self._table.to_arrow()
+            ulids = tbl.column("ulid").to_pylist() if "ulid" in tbl.column_names else []
+            texts = tbl.column("text").to_pylist() if "text" in tbl.column_names else []
+        except Exception:
+            ulids, texts = [], []
+        self._bm25_ulids = list(ulids)
+        self._bm25_tokens = [tokenize(t) for t in texts]
+        self._bm25 = None
+        # Seed the cache so the next process avoids the LanceDB scan
+        if self._bm25_ulids:
+            self._save_bm25_cache()
+
+    def _ensure_bm25(self):
+        if self._bm25 is None and self._bm25_tokens:
+            self._bm25 = BM25Okapi(self._bm25_tokens)
+            # Persist the fitted index so the next process skips this rebuild
+            self._save_bm25_cache()
+
+    def size(self) -> int:
+        return len(self._bm25_ulids)
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        importance_map: Optional[dict[str, float]] = None,
+        timestamp_map: Optional[dict[str, float]] = None,
+        recency_half_life_days: float = 30.0,
+    ) -> list[SearchHit]:
+        """
+        Hybrid search.
+
+        importance_map: ulid -> importance [0..1]; multiplies score
+        timestamp_map: ulid -> timestamp (seconds); used for recency boost
+        recency_half_life_days: за сколько дней recency боост падает в 2 раза
+
+        Improvement DD: when the embedding model is not yet loaded (cold start),
+        skip vector search entirely and return BM25-only results. This keeps
+        the FIRST recall after a process restart fast (~100ms) instead of
+        blocking 30-120s on model load. Result quality is lower without
+        vector similarity but the call doesn't timeout.
+        """
+        if self.size() == 0:
+            return []
+
+        # Improvement DD: if model not loaded yet, skip vector search
+        # and use BM25-only to avoid blocking the recall on cold-start.
+        if not self.is_ready():
+            return self._search_bm25_only(
+                query=query, top_k=top_k,
+                importance_map=importance_map,
+                timestamp_map=timestamp_map,
+                recency_half_life_days=recency_half_life_days,
+            )
+
+        # Embed query
+        q_emb = self.embed(query)
+
+        # Vector search (LanceDB)
+        try:
+            vec_results = (
+                self._table.search(q_emb.tolist())
+                .limit(min(top_k * 5, self.size()))
+                .to_list()
+            )
+        except Exception:
+            vec_results = []
+
+        vec_scores: dict[str, float] = {}
+        for r in vec_results:
+            # LanceDB возвращает _distance (L2 default) — конвертируем в similarity
+            dist = r.get("_distance", 0.0)
+            ulid = r.get("ulid", "")
+            if ulid:
+                # cosine similarity ≈ 1 - L2_normalized_dist^2 / 2
+                # для нормализованных векторов; LanceDB по дефолту L2
+                vec_scores[ulid] = 1.0 / (1.0 + dist)
+
+        # BM25
+        self._ensure_bm25()
+        bm25_scores: dict[str, float] = {}
+        if self._bm25 is not None:
+            q_tokens = tokenize(query)
+            scores = self._bm25.get_scores(q_tokens)
+            for ulid, score in zip(self._bm25_ulids, scores):
+                bm25_scores[ulid] = float(score)
+
+        # Combine
+        all_ulids = set(vec_scores.keys()) | set(bm25_scores.keys())
+        if not all_ulids:
+            return []
+
+        ulid_list = list(all_ulids)
+        bm25_arr = np.array([bm25_scores.get(u, 0.0) for u in ulid_list], dtype=np.float32)
+        vec_arr = np.array([vec_scores.get(u, 0.0) for u in ulid_list], dtype=np.float32)
+
+        norm_bm25 = normalize(bm25_arr)
+        norm_vec = normalize(vec_arr)
+        hybrid = self.bm25_weight * norm_bm25 + self.vec_weight * norm_vec
+
+        # Importance multiplier
+        importance_arr = np.array(
+            [importance_map.get(u, 0.5) if importance_map else 0.5 for u in ulid_list],
+            dtype=np.float32,
+        )
+        # Apply as multiplier: importance 1.0 = full, 0.0 = halved
+        importance_factor = 0.5 + 0.5 * importance_arr
+        hybrid *= importance_factor
+
+        # Recency boost
+        recency_arr = np.zeros(len(ulid_list), dtype=np.float32)
+        if timestamp_map:
+            now = time.time()
+            half_life_sec = recency_half_life_days * 86400.0
+            for i, u in enumerate(ulid_list):
+                ts = timestamp_map.get(u)
+                if ts is not None:
+                    age_sec = max(0.0, now - ts)
+                    recency_arr[i] = float(np.exp(-age_sec * np.log(2) / half_life_sec))
+            # Add 0..0.2 boost for recent items
+            hybrid = hybrid * (1.0 + 0.2 * recency_arr)
+
+        order = np.argsort(hybrid)[::-1][:top_k]
+        return [
+            SearchHit(
+                ulid=ulid_list[i],
+                score=float(hybrid[i]),
+                bm25_score=float(norm_bm25[i]),
+                vec_score=float(norm_vec[i]),
+                importance=float(importance_arr[i]),
+                recency_score=float(recency_arr[i]),
+            )
+            for i in order
+        ]
+
+    def _search_bm25_only(
+        self,
+        query: str,
+        top_k: int,
+        importance_map: Optional[dict[str, float]] = None,
+        timestamp_map: Optional[dict[str, float]] = None,
+        recency_half_life_days: float = 30.0,
+    ) -> list[SearchHit]:
+        """Improvement DD: BM25-only fallback for cold-start recall.
+        Returns instantly without waiting for the embedding model to load.
+        Result quality is lower than hybrid (no semantic similarity) but the
+        user gets text-match results immediately.
+        """
+        self._ensure_bm25()
+        if self._bm25 is None:
+            return []
+        q_tokens = tokenize(query)
+        if not q_tokens:
+            return []
+        scores = self._bm25.get_scores(q_tokens)
+        if len(scores) == 0:
+            return []
+        ulid_list = self._bm25_ulids
+        bm25_arr = np.asarray(scores, dtype=np.float32)
+        max_b = float(bm25_arr.max()) if bm25_arr.size else 0.0
+        norm = bm25_arr / (max_b + 1e-9) if max_b > 0 else bm25_arr
+
+        # Importance boost
+        importance_arr = np.array(
+            [float((importance_map or {}).get(u, 0.5)) for u in ulid_list],
+            dtype=np.float32,
+        )
+        importance_factor = 0.5 + 0.5 * importance_arr
+        hybrid = norm * importance_factor
+
+        # Recency boost
+        recency_arr = np.zeros(len(ulid_list), dtype=np.float32)
+        if timestamp_map:
+            now = time.time()
+            half_life_sec = recency_half_life_days * 86400.0
+            for i, u in enumerate(ulid_list):
+                ts = timestamp_map.get(u)
+                if ts is not None:
+                    age_sec = max(0.0, now - ts)
+                    recency_arr[i] = float(np.exp(-age_sec * np.log(2) / half_life_sec))
+            hybrid = hybrid * (1.0 + 0.2 * recency_arr)
+
+        order = np.argsort(hybrid)[::-1][:top_k]
+        return [
+            SearchHit(
+                ulid=ulid_list[i],
+                score=float(hybrid[i]),
+                bm25_score=float(norm[i]),
+                vec_score=0.0,
+                importance=float(importance_arr[i]),
+                recency_score=float(recency_arr[i]),
+            )
+            for i in order
+        ]

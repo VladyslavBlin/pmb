@@ -1,0 +1,100 @@
+[project]
+name = "pmb"
+version = "0.1.0"
+description = "Personal Memory Brain — local-first persistent memory for AI coding agents (MCP, beats mem0/Letta/Zep on retrieval)"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [{name = "PMB contributors"}]
+keywords = [
+    "mcp",
+    "memory",
+    "ai-agent",
+    "claude-code",
+    "codex",
+    "cursor",
+    "rag",
+    "vector-search",
+    "local-first",
+    "bm25",
+    "sqlite",
+    "lancedb",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Database",
+]
+dependencies = [
+    "fastmcp>=3.0",
+    "sentence-transformers>=4.0",
+    "lancedb>=0.30",
+    "rank-bm25>=0.2",
+    "numpy>=2.0",
+    "typer>=0.15",
+    "rich>=14.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+tui = [
+    "textual>=8.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "textual>=8.0",
+]
+consolidate = [
+    "anthropic>=0.40",
+]
+fastembed = [
+    "fastembed>=0.4",
+]
+all = [
+    "anthropic>=0.40",
+    "fastembed>=0.4",
+    "textual>=8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourname/pmb"
+Documentation = "https://github.com/yourname/pmb#readme"
+Repository = "https://github.com/yourname/pmb"
+Issues = "https://github.com/yourname/pmb/issues"
+Changelog = "https://github.com/yourname/pmb/blob/main/CHANGELOG.md"
+
+[project.scripts]
+pmb = "pmb.cli:app"
+pmb-mcp = "pmb.mcp.server:main"
+pmb-chat = "pmb.agent_wrapper.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pmb = ["py.typed", "dashboard/static/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

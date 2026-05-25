@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Editor temp
+*~
+.#*
+
+# PMB runtime data — never commit
+.pmb/
+pmb_workspace/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+events.db*
+
+# LanceDB
+*.lance/
+lance/
+
+# Logs / temp
+*.log
+.pmb_debug.log
+/tmp/
+.tmp/
+
+# Benchmark outputs (locomo10.json is downloaded separately)
+locomo10.json
+pmb_locomo*.json
+bench_results/
+recall_failures*.txt
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Backups from `pmb connect`
+*.pmb-backup

@@ -1,0 +1,530 @@
+"""
+Event Store — SQLite-based append-only лог событий.
+
+Event types:
+- "qa"      — Q/A пара от агента
+- "fact"    — извлечённый факт key=value
+- "pin"     — explicit user pin
+- "git"     — git event (commit, branch change)
+- "file"    — файл modification context
+- "test"    — test result context
+
+Schema (v1):
+- events (id, ulid, workspace_id, event_type, content, metadata_json,
+          timestamp, importance, access_count, last_accessed,
+          archived_at, source_session_id)
+- migrations (version, applied_at)
+
+Indexes:
+- workspace + recency
+- event_type
+- archived (для исключения из recall)
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Iterator, Optional
+
+SCHEMA_VERSION = 5
+
+
+# Memory tiers (loose analogy to STM/MTM/LTM in human memory).
+# Each event lives in exactly one tier at any time. Tiers differ only in
+# how fast importance decays — recall reads all active tiers equally.
+TIER_WORKING = "working"      # new memory, fast decay if not reinforced (~1 day half-life)
+TIER_EPISODIC = "episodic"    # confirmed memory of a specific event (~46 day half-life)
+TIER_SEMANTIC = "semantic"    # abstracted fact / decision / rule (~1 year half-life)
+
+
+def default_tier_for_event_type(event_type: str) -> str:
+    """Where a freshly-recorded event lands by default."""
+    if event_type == "fact":
+        return TIER_SEMANTIC
+    return TIER_WORKING
+
+
+# Per-tier daily decay multiplier. Compounded for `days_since_last_decay`.
+TIER_DECAY_FACTORS: dict[str, float] = {
+    TIER_WORKING: 0.70,   # half-life ≈ 1.94 days
+    TIER_EPISODIC: 0.985, # half-life ≈ 46 days
+    TIER_SEMANTIC: 0.998, # half-life ≈ 346 days
+}
+
+
+# Promotion thresholds (re-access counts) for moving up the tiers
+PROMOTE_WORKING_TO_EPISODIC_ACCESS = 3
+PROMOTE_EPISODIC_TO_SEMANTIC_ACCESS = 10
+
+
+@dataclass
+class Event:
+    """Одна запись в memory."""
+
+    id: Optional[int] = None
+    ulid: str = field(default_factory=lambda: _ulid())
+    workspace_id: str = ""
+    event_type: str = "qa"
+    content: str = ""
+    metadata: dict = field(default_factory=dict)
+    timestamp: float = field(default_factory=time.time)
+    importance: float = 0.5
+    access_count: int = 0
+    last_accessed: float = field(default_factory=time.time)
+    archived_at: Optional[float] = None
+    source_session_id: Optional[str] = None
+    tier: str = TIER_WORKING
+
+    def to_db_row(self) -> tuple:
+        return (
+            self.ulid,
+            self.workspace_id,
+            self.event_type,
+            self.content,
+            json.dumps(self.metadata, ensure_ascii=False),
+            self.timestamp,
+            self.importance,
+            self.access_count,
+            self.last_accessed,
+            self.archived_at,
+            self.source_session_id,
+            self.tier,
+        )
+
+    @classmethod
+    def from_db_row(cls, row: sqlite3.Row) -> "Event":
+        # `tier` may be absent in pre-v3 rows; default to "working"
+        try:
+            tier_val = row["tier"]
+        except (KeyError, IndexError):
+            tier_val = TIER_WORKING
+        return cls(
+            id=row["id"],
+            ulid=row["ulid"],
+            workspace_id=row["workspace_id"],
+            event_type=row["event_type"],
+            content=row["content"],
+            metadata=json.loads(row["metadata_json"] or "{}"),
+            timestamp=row["timestamp"],
+            importance=row["importance"],
+            access_count=row["access_count"],
+            last_accessed=row["last_accessed"],
+            archived_at=row["archived_at"],
+            source_session_id=row["source_session_id"],
+            tier=tier_val or TIER_WORKING,
+        )
+
+    def to_text(self) -> str:
+        """Текстовое представление для embedding."""
+        if self.event_type == "qa":
+            q = self.metadata.get("query", "")
+            a = self.content
+            return f"Q: {q}\nA: {a}"
+        elif self.event_type == "fact":
+            return f"Fact: {self.content}"
+        elif self.event_type == "git":
+            return f"Git event: {self.content}"
+        elif self.event_type == "file":
+            return f"File context: {self.content}"
+        elif self.event_type == "test":
+            return f"Test result: {self.content}"
+        elif self.event_type == "pin":
+            return f"Pinned: {self.content}"
+        return self.content
+
+
+def _ulid() -> str:
+    """Простой ULID-like sortable ID."""
+    return f"{int(time.time() * 1000):013x}_{uuid.uuid4().hex[:8]}"
+
+
+_DDL = [
+    """
+    CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ulid TEXT UNIQUE NOT NULL,
+        workspace_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        content TEXT NOT NULL,
+        metadata_json TEXT,
+        timestamp REAL NOT NULL,
+        importance REAL DEFAULT 0.5,
+        access_count INTEGER DEFAULT 0,
+        last_accessed REAL NOT NULL,
+        archived_at REAL,
+        source_session_id TEXT,
+        tier TEXT NOT NULL DEFAULT 'working'
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_workspace_time ON events(workspace_id, timestamp DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_workspace_active ON events(workspace_id, archived_at) WHERE archived_at IS NULL",
+    "CREATE INDEX IF NOT EXISTS idx_event_type ON events(workspace_id, event_type)",
+    "CREATE INDEX IF NOT EXISTS idx_recency ON events(last_accessed DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_tier ON events(workspace_id, tier, archived_at) WHERE archived_at IS NULL",
+    """
+    CREATE TABLE IF NOT EXISTS migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at REAL NOT NULL
+    )
+    """,
+    # ------------------------------------------------------------------
+    # v4: reasoning layer — direct event-to-event edges, narrative arcs.
+    # Reflections live in `events` with event_type='reflection' + metadata
+    # pointing to source ulid, so no new table for them.
+    # ------------------------------------------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS event_edges (
+        source_ulid TEXT NOT NULL,
+        target_ulid TEXT NOT NULL,
+        edge_type TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 1.0,
+        rationale TEXT,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (source_ulid, target_ulid, edge_type)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_eedges_src ON event_edges(source_ulid, edge_type)",
+    "CREATE INDEX IF NOT EXISTS idx_eedges_tgt ON event_edges(target_ulid, edge_type)",
+    """
+    CREATE TABLE IF NOT EXISTS arcs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active',
+        first_event_ulid TEXT,
+        last_event_ulid TEXT,
+        n_events INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL,
+        last_updated REAL NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_arcs_workspace ON arcs(workspace_id, status, last_updated DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS arc_events (
+        arc_id INTEGER NOT NULL,
+        event_ulid TEXT NOT NULL,
+        PRIMARY KEY (arc_id, event_ulid),
+        FOREIGN KEY (arc_id) REFERENCES arcs(id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_arc_events_event ON arc_events(event_ulid)",
+    # ------------------------------------------------------------------
+    # v5: predictive cache (Improvement F).
+    # LLM in sleep predicts likely user questions and pre-computes their
+    # top-K results. At recall time, fuzzy match (cosine on embeddings)
+    # → instant cache hit.
+    # ------------------------------------------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS predictive_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace_id TEXT NOT NULL,
+        query_text TEXT NOT NULL,
+        query_embedding BLOB NOT NULL,
+        top_ulids_json TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        last_hit_at REAL,
+        n_hits INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(workspace_id, query_text)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_pc_workspace ON predictive_cache(workspace_id, created_at DESC)",
+]
+
+
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """Add `tier` column to existing v1/v2 databases without dropping data."""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()]
+    if "tier" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN tier TEXT NOT NULL DEFAULT 'working'")
+    # Backfill: facts go to semantic; other content events stay 'working' then
+    # get promoted naturally by recall reinforcement.
+    conn.execute(
+        "UPDATE events SET tier = 'semantic' WHERE tier IS NULL OR tier = 'working' "
+        "  AND event_type = 'fact'"
+    )
+    conn.execute(
+        "UPDATE events SET tier = 'episodic' WHERE tier IS NULL OR tier = 'working' "
+        "  AND event_type IN ('git', 'qa') AND access_count >= 1"
+    )
+
+
+class EventStore:
+    """SQLite-based event store. Thread-safe через connection-per-call pattern."""
+
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._migrate()
+
+    @contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def _migrate(self):
+        with self._conn() as conn:
+            for ddl in _DDL:
+                conn.execute(ddl)
+            cur = conn.execute("SELECT MAX(version) FROM migrations")
+            current = cur.fetchone()[0] or 0
+            # Forward migrations for existing DBs
+            if current < 3:
+                _migrate_v2_to_v3(conn)
+            if current < SCHEMA_VERSION:
+                conn.execute(
+                    "INSERT INTO migrations (version, applied_at) VALUES (?, ?)",
+                    (SCHEMA_VERSION, time.time()),
+                )
+
+    # -----------------------------------------------------------------
+    # Write
+    # -----------------------------------------------------------------
+
+    def append(self, event: Event) -> Event:
+        """Записать событие. Возвращает event с заполненным id."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO events (
+                    ulid, workspace_id, event_type, content, metadata_json,
+                    timestamp, importance, access_count, last_accessed,
+                    archived_at, source_session_id, tier
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                event.to_db_row(),
+            )
+            event.id = cur.lastrowid
+        return event
+
+    def append_many(self, events: list[Event]) -> list[Event]:
+        with self._conn() as conn:
+            for event in events:
+                cur = conn.execute(
+                    """
+                    INSERT INTO events (
+                        ulid, workspace_id, event_type, content, metadata_json,
+                        timestamp, importance, access_count, last_accessed,
+                        archived_at, source_session_id, tier
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    event.to_db_row(),
+                )
+                event.id = cur.lastrowid
+        return events
+
+    def update_tier(self, ulid: str, tier: str) -> None:
+        """Move an event between memory tiers (working → episodic → semantic)."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE events SET tier = ? WHERE ulid = ?", (tier, ulid),
+            )
+
+    # -----------------------------------------------------------------
+    # Read
+    # -----------------------------------------------------------------
+
+    def get_by_ulid(self, ulid: str) -> Optional[Event]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM events WHERE ulid = ?", (ulid,)
+            ).fetchone()
+            return Event.from_db_row(row) if row else None
+
+    def get_many(
+        self,
+        ulids: list[str],
+        workspace_id: Optional[str] = None,
+        only_active: bool = True,
+    ) -> dict[str, Event]:
+        """
+        Batched fetch by ulid list. Returns {ulid: Event} map.
+
+        Avoids the O(N) scan when ranking only needs a few candidate rows.
+        """
+        if not ulids:
+            return {}
+        with self._conn() as conn:
+            placeholders = ",".join("?" * len(ulids))
+            sql = f"SELECT * FROM events WHERE ulid IN ({placeholders})"
+            params: list = list(ulids)
+            if workspace_id is not None:
+                sql += " AND workspace_id = ?"
+                params.append(workspace_id)
+            if only_active:
+                sql += " AND archived_at IS NULL"
+            rows = conn.execute(sql, params).fetchall()
+            return {r["ulid"]: Event.from_db_row(r) for r in rows}
+
+    def list_active(self, workspace_id: str, limit: int = 100,
+                    event_type: Optional[str] = None) -> list[Event]:
+        """Активные (не archived) события для workspace."""
+        with self._conn() as conn:
+            if event_type:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM events
+                    WHERE workspace_id = ? AND archived_at IS NULL AND event_type = ?
+                    ORDER BY timestamp DESC LIMIT ?
+                    """,
+                    (workspace_id, event_type, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM events
+                    WHERE workspace_id = ? AND archived_at IS NULL
+                    ORDER BY timestamp DESC LIMIT ?
+                    """,
+                    (workspace_id, limit),
+                ).fetchall()
+            return [Event.from_db_row(r) for r in rows]
+
+    def count(self, workspace_id: str, include_archived: bool = False) -> int:
+        with self._conn() as conn:
+            if include_archived:
+                cur = conn.execute(
+                    "SELECT COUNT(*) FROM events WHERE workspace_id = ?",
+                    (workspace_id,),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT COUNT(*) FROM events WHERE workspace_id = ? AND archived_at IS NULL",
+                    (workspace_id,),
+                )
+            return cur.fetchone()[0]
+
+    def stats(self, workspace_id: str) -> dict:
+        with self._conn() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE workspace_id = ?",
+                (workspace_id,),
+            ).fetchone()[0]
+            active = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE workspace_id = ? AND archived_at IS NULL",
+                (workspace_id,),
+            ).fetchone()[0]
+            by_type_rows = conn.execute(
+                """
+                SELECT event_type, COUNT(*) AS n FROM events
+                WHERE workspace_id = ? AND archived_at IS NULL
+                GROUP BY event_type
+                """,
+                (workspace_id,),
+            ).fetchall()
+            by_type = {r["event_type"]: r["n"] for r in by_type_rows}
+            oldest = conn.execute(
+                """
+                SELECT MIN(timestamp) FROM events WHERE workspace_id = ?
+                """,
+                (workspace_id,),
+            ).fetchone()[0]
+            newest = conn.execute(
+                """
+                SELECT MAX(timestamp) FROM events WHERE workspace_id = ?
+                """,
+                (workspace_id,),
+            ).fetchone()[0]
+
+        return {
+            "total": total,
+            "active": active,
+            "archived": total - active,
+            "by_type": by_type,
+            "oldest_timestamp": oldest,
+            "newest_timestamp": newest,
+        }
+
+    # -----------------------------------------------------------------
+    # Update / Mutate
+    # -----------------------------------------------------------------
+
+    def touch(self, ulid: str):
+        """Отметить событие как использованное (recall hit)."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE events
+                SET access_count = access_count + 1, last_accessed = ?
+                WHERE ulid = ?
+                """,
+                (time.time(), ulid),
+            )
+
+    def apply_recall_updates(
+        self,
+        touches: list[str],
+        importance_updates: list[tuple[str, float]],
+    ) -> None:
+        """Batch the per-recall side effects into a single SQLite transaction.
+
+        Saves p95 latency: per-event touch + importance update in two
+        separate transactions adds ~5ms each. For top_k=5 that's ~50ms
+        of avoidable SQLite open/close cost.
+        """
+        if not touches and not importance_updates:
+            return
+        with self._conn() as conn:
+            now = time.time()
+            conn.execute("BEGIN")
+            try:
+                if touches:
+                    conn.executemany(
+                        "UPDATE events SET access_count = access_count + 1, "
+                        "last_accessed = ? WHERE ulid = ?",
+                        [(now, u) for u in touches],
+                    )
+                if importance_updates:
+                    conn.executemany(
+                        "UPDATE events SET importance = ? WHERE ulid = ?",
+                        [(max(0.0, min(1.0, imp)), u) for u, imp in importance_updates],
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+    def archive(self, ulid: str):
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE events SET archived_at = ? WHERE ulid = ?",
+                (time.time(), ulid),
+            )
+
+    def unarchive(self, ulid: str):
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE events SET archived_at = NULL WHERE ulid = ?",
+                (ulid,),
+            )
+
+    def pin(self, ulid: str, importance: float = 1.0):
+        """Закрепить — высокая importance, никогда не архивируется автоматически."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE events
+                SET importance = ?, archived_at = NULL
+                WHERE ulid = ?
+                """,
+                (importance, ulid),
+            )
+
+    def update_importance(self, ulid: str, importance: float):
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE events SET importance = ? WHERE ulid = ?",
+                (max(0.0, min(1.0, importance)), ulid),
+            )

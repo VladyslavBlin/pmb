@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PMB Dashboard</title>
+<style>
+  :root {
+    --bg: #0e1015;
+    --panel: #161922;
+    --border: #262a36;
+    --text: #d8dee9;
+    --muted: #6c7080;
+    --accent: #7aa7ff;
+    --accent-dim: #4d6da6;
+    --good: #6cbf6c;
+    --warn: #d4a13c;
+    --bad: #e26a6a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  header .brand { font-weight: 600; font-size: 14px; }
+  header .ws { color: var(--muted); font-size: 12px; }
+  nav {
+    display: flex;
+    gap: 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  nav button {
+    background: none;
+    color: var(--muted);
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 10px 18px;
+    cursor: pointer;
+    font: inherit;
+  }
+  nav button.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  nav button:hover { color: var(--text); }
+  main { padding: 18px 24px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .panel h2 { font-size: 13px; margin: 0 0 10px; color: var(--accent); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+  .grid-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+  }
+  .stat { background: var(--bg); padding: 12px; border-radius: 4px; border: 1px solid var(--border); }
+  .stat .v { font-size: 22px; font-weight: 600; color: var(--accent); }
+  .stat .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; padding: 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 500; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; }
+  td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:hover td { background: rgba(122, 167, 255, 0.05); }
+  .ulid { font-family: monospace; font-size: 11px; color: var(--muted); cursor: pointer; }
+  .ulid:hover { color: var(--accent); }
+  .tier { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; text-transform: uppercase; }
+  .tier-working  { background: rgba(228, 165, 70, 0.2); color: var(--warn); }
+  .tier-episodic { background: rgba(112, 167, 247, 0.2); color: var(--accent); }
+  .tier-semantic { background: rgba(108, 191, 108, 0.2); color: var(--good); }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; background: var(--border); color: var(--muted); margin-right: 4px; }
+  input[type=text], textarea {
+    width: 100%; padding: 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font: inherit;
+  }
+  input[type=text]:focus, textarea:focus { outline: none; border-color: var(--accent-dim); }
+  button.primary {
+    background: var(--accent);
+    color: #0a0c10;
+    border: none;
+    padding: 9px 18px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+  }
+  button.primary:hover { background: #8fb8ff; }
+  button.ghost {
+    background: none;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font: inherit;
+    margin-right: 6px;
+  }
+  button.ghost:hover { color: var(--text); border-color: var(--accent-dim); }
+  .recall-row { padding: 10px; border-bottom: 1px solid var(--border); }
+  .recall-row .score { color: var(--accent); font-family: monospace; }
+  .recall-row .content { margin-top: 4px; }
+  .recall-row.gold .score { color: var(--good); }
+  .hide { display: none; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .row > input[type=text] { flex: 1; }
+  .row > label { color: var(--muted); font-size: 12px; }
+  .small { color: var(--muted); font-size: 11px; }
+  .latency { font-family: monospace; }
+  #event-detail-modal {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center;
+    z-index: 100;
+  }
+  #event-detail-modal .modal-body {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    max-width: 760px; max-height: 80vh; overflow-y: auto; padding: 20px;
+    width: 90%;
+  }
+  pre { background: var(--bg); padding: 10px; border-radius: 3px; overflow-x: auto; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">PMB Dashboard</span>
+  <span class="ws" id="ws-label">loading…</span>
+</header>
+
+<nav>
+  <button class="active" data-tab="overview">Overview</button>
+  <button data-tab="events">Events</button>
+  <button data-tab="entities">Entities</button>
+  <button data-tab="graph">Graph</button>
+  <button data-tab="arcs">Arcs</button>
+  <button data-tab="dedup">Duplicates</button>
+  <button data-tab="perf">Performance</button>
+  <button data-tab="recall">Recall Debug</button>
+</nav>
+
+<main>
+
+<!-- OVERVIEW -->
+<section id="tab-overview">
+  <div class="panel">
+    <h2>Workspace stats</h2>
+    <div class="grid-stats" id="stats-grid">…</div>
+  </div>
+  <div class="panel">
+    <h2>Graph stats</h2>
+    <div class="grid-stats" id="graph-grid">…</div>
+  </div>
+</section>
+
+<!-- EVENTS -->
+<section id="tab-events" class="hide">
+  <div class="panel">
+    <h2>Recent events</h2>
+    <div class="small" style="margin-bottom: 8px;">
+      <button class="ghost" onclick="loadEvents(50)">last 50</button>
+      <button class="ghost" onclick="loadEvents(200)">last 200</button>
+      <button class="ghost" onclick="loadEvents(1000)">last 1000</button>
+    </div>
+    <table>
+      <thead><tr>
+        <th>ULID</th><th>Type</th><th>Tier</th><th>Importance</th>
+        <th>Accesses</th><th>Content</th>
+      </tr></thead>
+      <tbody id="events-body"></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ENTITIES -->
+<section id="tab-entities" class="hide">
+  <div class="panel">
+    <h2>Top entities</h2>
+    <div class="small" style="margin-bottom: 8px;">
+      <button class="ghost" onclick="loadEntities('')">all</button>
+      <button class="ghost" onclick="loadEntities('tech')">tech</button>
+      <button class="ghost" onclick="loadEntities('file')">file</button>
+      <button class="ghost" onclick="loadEntities('person')">person</button>
+      <button class="ghost" onclick="loadEntities('concept')">concept</button>
+      <button class="ghost" onclick="loadEntities('theme')">theme</button>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Kind</th><th>Name</th><th>Mentions</th><th>Last seen</th>
+      </tr></thead>
+      <tbody id="entities-body"></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- GRAPH -->
+<section id="tab-graph" class="hide">
+  <div class="panel">
+    <h2>Memory Graph</h2>
+    <div class="small" style="margin-bottom: 8px;">
+      <button class="ghost" onclick="loadGraph(30)">top 30</button>
+      <button class="ghost" onclick="loadGraph(80)">top 80</button>
+      <button class="ghost" onclick="loadGraph(200)">top 200</button>
+      <span class="small" style="margin-left:16px;" id="graph-meta"></span>
+    </div>
+    <div style="border: 1px solid var(--border); border-radius: 4px; overflow: hidden;">
+      <svg id="graph-svg" width="100%" height="600" style="background: #0a0c10;"></svg>
+    </div>
+    <div class="small" style="margin-top: 8px;">
+      Цвет узла = тип (tech / person / file / function / concept / theme).
+      Размер = частота упоминаний.
+      Линия = <b>co-occurrence</b> — две entity встретились в одном event;
+      толщина = сколько раз встречались. Это <em>не</em> семантическая связь
+      (не "verb" между ними) — просто соседство. Перетаскивай узлы мышкой.
+    </div>
+  </div>
+</section>
+
+<!-- ARCS -->
+<section id="tab-arcs" class="hide">
+  <div class="panel">
+    <h2>Narrative arcs</h2>
+    <div id="arcs-list"></div>
+  </div>
+</section>
+
+<!-- PERFORMANCE (Improvement JJ) -->
+<section id="tab-perf" class="hide">
+  <div class="panel">
+    <h2>MCP performance — last 24h</h2>
+    <div class="small" style="margin-bottom: 8px;">
+      Реальные времена всех MCP-вызовов. Показывает p50/p95 по каждому tool'у +
+      последние 50 вызовов. Если что-то "висит" в Codex UI — здесь видна
+      реальная цифра.
+    </div>
+    <div class="row" style="margin-bottom: 8px;">
+      <button class="ghost" onclick="loadPerf(1)">last 1h</button>
+      <button class="ghost" onclick="loadPerf(24)">last 24h</button>
+      <button class="ghost" onclick="loadPerf(168)">last 7d</button>
+      <span id="perf-meta" class="small" style="margin-left:16px;"></span>
+    </div>
+
+    <h3 style="margin-top: 20px;">Recent turns — что спрашивали и что делали</h3>
+    <div class="small" style="opacity: 0.7; margin-bottom: 8px;">
+      MCP-вызовы сгруппированы в turns (gap >30s = новый turn). Для каждого
+      показан контекст из events: вопрос/факт/решение, активные tools и
+      суммарное PMB-время. Это видимая часть Codex'овской работы с памятью.
+    </div>
+    <table>
+      <thead><tr>
+        <th>When</th><th>Context (что было)</th><th>Tools</th><th>PMB time</th>
+      </tr></thead>
+      <tbody id="perf-turns"></tbody>
+    </table>
+
+    <h3 style="margin-top: 20px;">Per-tool stats</h3>
+    <table>
+      <thead><tr>
+        <th>Tool</th><th>Calls</th><th>p50</th><th>p95</th><th>p99</th>
+        <th>max</th><th>avg</th><th>errors</th>
+      </tr></thead>
+      <tbody id="perf-tool-stats"></tbody>
+    </table>
+
+    <h3 style="margin-top: 20px;">Hourly timeline (last 24h)</h3>
+    <div id="perf-timeline" style="margin-bottom: 16px;"></div>
+
+    <h3 style="margin-top: 20px;">Recent calls (last 50)</h3>
+    <table>
+      <thead><tr><th>Time</th><th>Tool</th><th>Duration</th><th>Status</th></tr></thead>
+      <tbody id="perf-recent"></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- DUPLICATES (Improvement U: L3) -->
+<section id="tab-dedup" class="hide">
+  <div class="panel">
+    <h2>Duplicate candidates</h2>
+    <div class="small" style="margin-bottom: 8px;">
+      Пары с cosine ≥ 0.80, &lt; 0.92 — слишком похожи чтобы игнорить, недостаточно
+      чтобы автомержить. Решай вручную или запусти LLM verify через CLI:
+      <code>pmb dedupe --run-pending</code>.
+    </div>
+    <div class="row" style="margin-bottom: 8px;">
+      <button class="ghost" onclick="loadDedup()">Refresh</button>
+      <button class="ghost" onclick="runDedupSweep(0.92)">Sweep ≥0.92 (safe)</button>
+      <button class="ghost" onclick="runDedupSweep(0.88)">Sweep ≥0.88 (looser)</button>
+      <span id="dedup-meta" class="small" style="margin-left:16px;"></span>
+    </div>
+    <div id="dedup-list"></div>
+  </div>
+</section>
+
+<!-- RECALL DEBUG -->
+<section id="tab-recall" class="hide">
+  <div class="panel">
+    <h2>Recall debugger</h2>
+    <div class="row">
+      <input type="text" id="rq-query" placeholder="Type a query to debug recall...">
+      <label>top_k</label>
+      <input type="text" id="rq-topk" value="10" style="width: 60px;">
+      <label><input type="checkbox" id="rq-rerank"> rerank</label>
+      <button class="primary" onclick="runRecall()">Recall</button>
+    </div>
+    <div id="recall-meta" class="small"></div>
+    <div id="recall-results"></div>
+  </div>
+</section>
+
+</main>
+
+<!-- Event detail modal -->
+<div id="event-detail-modal" onclick="if(event.target.id==='event-detail-modal')closeModal()">
+  <div class="modal-body" id="event-detail-body">…</div>
+</div>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const $$ = sel => document.querySelectorAll(sel);
+
+function fmtNum(n) {
+  if (n === undefined || n === null) return '–';
+  if (typeof n === 'number' && !Number.isInteger(n)) return n.toFixed(2);
+  return String(n);
+}
+function fmtTime(t) {
+  if (!t) return '–';
+  try { return new Date(t * 1000).toISOString().slice(0, 19).replace('T', ' '); }
+  catch (e) { return '–'; }
+}
+function tierBadge(t) {
+  return `<span class="tier tier-${t||'working'}">${t||'working'}</span>`;
+}
+function escapeHTML(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function api(path, options) {
+  const r = await fetch(path, options || {});
+  return r.json();
+}
+
+// Tabs
+$$('nav button').forEach(btn => btn.addEventListener('click', () => {
+  $$('nav button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  $$('main > section').forEach(s => s.classList.add('hide'));
+  $('#tab-' + btn.dataset.tab).classList.remove('hide');
+  if (btn.dataset.tab === 'events') loadEvents(50);
+  if (btn.dataset.tab === 'entities') loadEntities('');
+  if (btn.dataset.tab === 'arcs') loadArcs();
+  if (btn.dataset.tab === 'graph') loadGraph(80);
+  if (btn.dataset.tab === 'dedup') loadDedup();
+  if (btn.dataset.tab === 'perf') loadPerf(24);
+}));
+
+// Stats
+async function loadStats() {
+  const s = await api('/api/stats');
+  $('#ws-label').textContent = (s.workspace?.workspace?.name || '?') + ' · ' + (s.workspace?.workspace?.id || '');
+  const sg = $('#stats-grid'); sg.innerHTML = '';
+  const ws = s.workspace || {};
+  const ev = ws.events || {};
+  const stats = [
+    ['Total events', ev.total || ev.n_total || '?'],
+    ['Active', ev.active || '?'],
+    ['Pinned', ev.pinned || '?'],
+    ['Archived', ev.archived || '?'],
+    ['Mean importance', (ev.mean_importance || 0).toFixed(2)],
+  ];
+  for (const [k, v] of stats) {
+    sg.insertAdjacentHTML('beforeend', `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`);
+  }
+  const gg = $('#graph-grid'); gg.innerHTML = '';
+  const g = s.graph || {};
+  const gstats = [
+    ['Entities', g.n_entities || 0],
+    ['Edges', g.n_edges || 0],
+  ];
+  for (const k of Object.keys(g.by_kind || {})) {
+    gstats.push([`Entities (${k})`, g.by_kind[k]]);
+  }
+  for (const [k, v] of gstats) {
+    gg.insertAdjacentHTML('beforeend', `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`);
+  }
+}
+
+// Events
+async function loadEvents(limit) {
+  const evs = await api('/api/events?limit=' + limit);
+  const body = $('#events-body'); body.innerHTML = '';
+  for (const e of evs) {
+    const row = `
+      <tr>
+        <td><span class="ulid" onclick="showEvent('${e.ulid}')">${e.ulid.slice(0, 14)}…</span></td>
+        <td><span class="badge">${e.event_type}</span></td>
+        <td>${tierBadge(e.tier)}</td>
+        <td>${fmtNum(e.importance)}</td>
+        <td>${e.access_count}</td>
+        <td>${escapeHTML((e.content||'').slice(0, 200))}</td>
+      </tr>`;
+    body.insertAdjacentHTML('beforeend', row);
+  }
+}
+
+// Entities
+async function loadEntities(kind) {
+  const url = '/api/entities?limit=100' + (kind ? '&kind=' + kind : '');
+  const ents = await api(url);
+  const body = $('#entities-body'); body.innerHTML = '';
+  for (const e of ents) {
+    body.insertAdjacentHTML('beforeend', `
+      <tr>
+        <td><span class="badge">${e.kind}</span></td>
+        <td>${escapeHTML(e.name)}</td>
+        <td>${e.n_mentions}</td>
+        <td class="small">${fmtTime(e.last_seen)}</td>
+      </tr>`);
+  }
+}
+
+// Performance (Improvement JJ)
+async function loadPerf(hours) {
+  const meta = $('#perf-meta');
+  meta.textContent = 'loading…';
+  const data = await api('/api/perf?hours=' + hours);
+  if (data.error) {
+    meta.textContent = 'error: ' + data.error;
+    return;
+  }
+  meta.innerHTML = `window: <b>${data.window_hours}h</b> · total calls: <b>${data.total_calls}</b> · errors: <b>${data.error_count}</b>`;
+
+  // Recent turns — what the user asked + which tools fired
+  const turnsTbody = $('#perf-turns');
+  if (!data.turns || !data.turns.length) {
+    turnsTbody.innerHTML = '<tr><td colspan="4" class="small" style="opacity:0.6;">'
+      + 'No turns yet. Talk to Codex / Claude and reload.</td></tr>';
+  } else {
+    turnsTbody.innerHTML = data.turns.map(t => {
+      const span_s = Math.max(0, t.last_ts - t.first_ts);
+      const ctx = t.context
+        ? `<div><span class="small" style="opacity:0.6;">[${escapeHTML(t.context.event_type)}]</span> ${escapeHTML(t.context.content)}</div>`
+        : `<div class="small" style="opacity:0.5;">(no context event found)</div>`;
+      // Tool sequence — unique tools, comma-separated, with × count
+      const counts = {};
+      t.tools.forEach(name => { counts[name] = (counts[name]||0) + 1; });
+      const toolsStr = Object.entries(counts)
+        .map(([n, c]) => c > 1 ? `${n} ×${c}` : n)
+        .join(', ');
+      return `
+        <tr>
+          <td class="small">${fmtTime(t.first_ts)}<br>
+            <span style="opacity:0.5;">span ${fmtMs(span_s*1000)}</span></td>
+          <td>${ctx}</td>
+          <td><code class="small">${escapeHTML(toolsStr)}</code></td>
+          <td><span class="latency">${fmtMs(t.total_ms)}</span>
+            ${t.n_errors ? `<span style="color:#e26a6a;">·${t.n_errors} err</span>` : ''}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  // Per-tool stats
+  const tbody = $('#perf-tool-stats');
+  if (!data.by_tool || !data.by_tool.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="small" style="opacity:0.6;">No MCP calls yet in this window.</td></tr>';
+  } else {
+    tbody.innerHTML = data.by_tool.map(t => `
+      <tr>
+        <td><code>${escapeHTML(t.name)}</code></td>
+        <td>${t.count}</td>
+        <td>${fmtMs(t.p50)}</td>
+        <td>${fmtMs(t.p95)}</td>
+        <td>${fmtMs(t.p99)}</td>
+        <td>${fmtMs(t.max)}</td>
+        <td>${fmtMs(t.avg)}</td>
+        <td style="${t.errors > 0 ? 'color: #e26a6a; font-weight: 600;' : ''}">${t.errors}</td>
+      </tr>
+    `).join('');
+  }
+
+  // Timeline (simple bar chart)
+  const tl = $('#perf-timeline');
+  const buckets = data.timeline_buckets || [];
+  const maxCount = Math.max(1, ...buckets.map(b => b.count));
+  tl.innerHTML = `
+    <div style="display: flex; align-items: flex-end; gap: 2px; height: 80px; border-bottom: 1px solid #3a3f50;">
+      ${buckets.slice().reverse().map(b => `
+        <div title="${b.hours_ago}h ago — ${b.count} calls, avg ${fmtMs(b.avg_ms)}"
+             style="flex: 1; background: ${b.count > 0 ? '#7aa7ff' : '#222'};
+                    height: ${Math.max(2, (b.count / maxCount) * 80)}px;
+                    opacity: ${b.count > 0 ? '0.8' : '0.3'};"></div>
+      `).join('')}
+    </div>
+    <div class="small" style="display: flex; justify-content: space-between; opacity: 0.6;">
+      <span>24h ago</span><span>now</span>
+    </div>
+  `;
+
+  // Recent calls
+  const recent = $('#perf-recent');
+  if (!data.recent || !data.recent.length) {
+    recent.innerHTML = '<tr><td colspan="4" class="small" style="opacity:0.6;">No recent calls.</td></tr>';
+  } else {
+    recent.innerHTML = data.recent.map(r => `
+      <tr>
+        <td class="small">${fmtTime(r.ts)}</td>
+        <td><code>${escapeHTML(r.tool)}</code></td>
+        <td><span class="latency">${fmtMs(r.ms)}</span></td>
+        <td>${r.success
+            ? '<span style="color:#6cbf6c;">ok</span>'
+            : `<span style="color:#e26a6a;" title="${escapeHTML(r.error||'')}">err</span>`}</td>
+      </tr>
+    `).join('');
+  }
+}
+
+function fmtMs(ms) {
+  if (ms < 1) return '<1ms';
+  if (ms < 1000) return Math.round(ms) + 'ms';
+  return (ms / 1000).toFixed(2) + 's';
+}
+
+function fmtTime(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString();
+}
+
+// Duplicates (Improvement U: L3)
+async function loadDedup() {
+  const meta = $('#dedup-meta');
+  const list = $('#dedup-list');
+  meta.textContent = 'loading...';
+  list.innerHTML = '';
+  const pairs = await api('/api/dedup_candidates?limit=200');
+  if (!pairs || !pairs.length) {
+    meta.textContent = 'No borderline duplicate pairs.';
+    list.innerHTML = '<p class="small" style="opacity:0.6;">'
+      + 'Чисто. Либо реально нет дублей, либо все merge'
+      + ' (свежий запуск — попробуй "Sweep ≥0.92").</p>';
+    return;
+  }
+  meta.textContent = `${pairs.length} pending pair${pairs.length===1?'':'s'}`;
+  list.innerHTML = pairs.map(p => `
+    <div class="panel" style="margin: 10px 0; padding: 12px;">
+      <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span class="small">cosine: <span class="latency">${(p.similarity||0).toFixed(3)}</span>
+          &nbsp;·&nbsp; type: <code>${escapeHTML(p.event_type||'?')}</code></span>
+        <span>
+          <button class="ghost" onclick="dedupMerge(${p.id}, '${p.new_ulid}', '${p.candidate_ulid}')">
+            Merge new → existing
+          </button>
+          <button class="ghost" onclick="dedupKeep(${p.id})">Keep both</button>
+        </span>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+        <div>
+          <div class="small" style="opacity:0.7;">NEW (will archive on merge)</div>
+          <div style="padding: 6px; background: #1a1d26; border-radius: 4px; font-size: 13px;">
+            ${escapeHTML(p.new_content||'')}
+          </div>
+          <div class="small" style="opacity:0.5;">ulid: ${escapeHTML(p.new_ulid)}</div>
+        </div>
+        <div>
+          <div class="small" style="opacity:0.7;">EXISTING (canonical)</div>
+          <div style="padding: 6px; background: #1a1d26; border-radius: 4px; font-size: 13px;">
+            ${escapeHTML(p.candidate_content||'')}
+          </div>
+          <div class="small" style="opacity:0.5;">ulid: ${escapeHTML(p.candidate_ulid)}</div>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+async function dedupMerge(pendingId, newUlid, canonical) {
+  await api('/api/dedup_merge', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({pending_id: pendingId, new_ulid: newUlid, canonical_ulid: canonical}),
+  });
+  loadDedup();
+}
+
+async function dedupKeep(pendingId) {
+  await api('/api/dedup_keep_both', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({pending_id: pendingId}),
+  });
+  loadDedup();
+}
+
+async function runDedupSweep(threshold) {
+  $('#dedup-meta').textContent = `sweeping (≥${threshold})...`;
+  const r = await api('/api/dedup_sweep', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({threshold}),
+  });
+  $('#dedup-meta').textContent =
+    `Sweep done: clusters=${r.n_clusters||0}, merged=${r.n_merged||0}`;
+  setTimeout(loadDedup, 500);
+}
+
+// Arcs
+async function loadArcs() {
+  const arcs = await api('/api/arcs');
+  const list = $('#arcs-list');
+  if (!arcs.length) {
+    list.innerHTML = '<p class="small">No arcs yet. Run <code>pmb arcs cluster</code> to build them.</p>';
+    return;
+  }
+  list.innerHTML = arcs.map(a => `
+    <div class="panel" style="margin: 10px 0;">
+      <div style="font-weight:600;">#${a.id} ${escapeHTML(a.title)} <span class="small">(${a.n_events} events)</span></div>
+      <div class="small">${escapeHTML(a.summary||'')}</div>
+    </div>`).join('');
+}
+
+// Recall debugger
+async function runRecall() {
+  const query = $('#rq-query').value.trim();
+  const topK = parseInt($('#rq-topk').value || '10');
+  const rerank = $('#rq-rerank').checked;
+  if (!query) return;
+  $('#recall-meta').textContent = 'running...';
+  $('#recall-results').innerHTML = '';
+  const t0 = performance.now();
+  const r = await api('/api/recall', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({query, top_k: topK, rerank}),
+  });
+  const elapsed = (performance.now() - t0).toFixed(0);
+  $('#recall-meta').innerHTML = `
+    Server elapsed: <span class="latency">${(r.elapsed_ms||0).toFixed(1)}ms</span>
+    · Confidence: <span class="latency">${(r.confidence||0).toFixed(3)}</span>
+    · Results: <span class="latency">${r.n_results}/${r.n_total_in_workspace}</span>
+    · Round-trip: <span class="latency">${elapsed}ms</span>
+  `;
+  const out = $('#recall-results');
+  for (const x of (r.results || [])) {
+    const row = `
+      <div class="recall-row">
+        <div>
+          <span class="score">[${x.score?.toFixed(3) || '?'}]</span>
+          <span class="badge">${x.event_type}</span>
+          ${tierBadge(x.tier)}
+          <span class="ulid" onclick="showEvent('${x.ulid}')">${x.ulid.slice(0,14)}…</span>
+          <span class="small">BM25=${(x.bm25_score||0).toFixed(2)} · vec=${(x.vec_score||0).toFixed(2)} · imp=${(x.importance||0).toFixed(2)}</span>
+        </div>
+        <div class="content">${escapeHTML((x.content||'').slice(0, 400))}</div>
+      </div>`;
+    out.insertAdjacentHTML('beforeend', row);
+  }
+}
+
+// Event detail modal
+async function showEvent(ulid) {
+  const m = $('#event-detail-modal');
+  m.style.display = 'flex';
+  $('#event-detail-body').innerHTML = 'Loading…';
+  const e = await api('/api/event/' + ulid);
+  if (e.error) { $('#event-detail-body').innerHTML = '<p>Error: ' + e.error + '</p>'; return; }
+  let html = `
+    <h2>${e.event_type} · ${tierBadge(e.tier)}</h2>
+    <p class="small">${e.ulid} · ${fmtTime(e.timestamp)} · importance ${fmtNum(e.importance)} · ${e.access_count} accesses</p>
+    <pre>${escapeHTML(e.content || '')}</pre>
+    <h3>Entities (${e.entities.length})</h3>
+    <p>${e.entities.map(en => `<span class="badge">${en.kind}:${en.name}</span>`).join(' ')}</p>
+    <h3>Derived (${e.derived.length})</h3>
+    ${e.derived.map(d => `<div class="recall-row"><span class="badge">${d.event_type}</span> ${escapeHTML(d.content)}</div>`).join('') || '<p class="small">none</p>'}
+    <h3>Edges out (${e.edges_out.length}) / in (${e.edges_in.length})</h3>
+    <p class="small">
+      ${e.edges_out.map(x => `→ <span class="badge">${x.type}</span> ${x.target.slice(0,12)}…`).join(' ')}<br>
+      ${e.edges_in.map(x => `← <span class="badge">${x.type}</span> ${x.source.slice(0,12)}…`).join(' ')}
+    </p>
+    <p style="margin-top:14px;">
+      <button class="ghost" onclick="pin('${e.ulid}', true)">Pin</button>
+      <button class="ghost" onclick="pin('${e.ulid}', false)">Unpin</button>
+      <button class="ghost" onclick="archive('${e.ulid}')">Archive</button>
+      <button class="ghost" onclick="feedback('${e.ulid}', 'good')">👍 good</button>
+      <button class="ghost" onclick="feedback('${e.ulid}', 'bad')">👎 bad</button>
+    </p>
+  `;
+  $('#event-detail-body').innerHTML = html;
+}
+function closeModal() { $('#event-detail-modal').style.display = 'none'; }
+async function pin(ulid, p) {
+  await api('/api/' + (p ? 'pin' : 'unpin') + '/' + ulid, {method: 'POST'});
+  showEvent(ulid);
+}
+async function archive(ulid) {
+  if (!confirm('Archive this event?')) return;
+  await api('/api/archive/' + ulid, {method: 'POST'});
+  closeModal();
+  loadEvents(50);
+}
+async function feedback(ulid, verdict) {
+  await api('/api/feedback', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ulid, verdict}),
+  });
+  alert('Feedback recorded.');
+}
+
+// ==================================================================
+// Memory Graph — force-directed SVG visualization (vanilla JS, no deps)
+// ==================================================================
+
+const KIND_COLORS = {
+  tech:     '#7aa7ff',
+  person:   '#e26a6a',
+  file:     '#6cbf6c',
+  function: '#d4a13c',
+  class:    '#c478eb',
+  import:   '#5dcfd8',
+  concept:  '#888d9e',
+  theme:    '#a374ff',
+};
+
+let _graphSim = null;
+
+async function loadGraph(limit) {
+  const svg = $('#graph-svg');
+  svg.innerHTML = '';
+  const meta = $('#graph-meta');
+  meta.textContent = 'loading...';
+
+  const data = await api('/api/graph?limit=' + limit);
+  if (!data.nodes || !data.nodes.length) {
+    meta.textContent = 'No graph yet — record some events first.';
+    return;
+  }
+  meta.textContent = `${data.nodes.length} nodes, ${data.edges.length} edges`;
+
+  // Build adjacency for edge lookup
+  const nodeById = {};
+  data.nodes.forEach(n => {
+    n.x = Math.random() * 800;
+    n.y = Math.random() * 400;
+    n.vx = 0; n.vy = 0;
+    n.r = 4 + Math.sqrt(n.mentions) * 2.5;
+    nodeById[n.id] = n;
+  });
+
+  // Filter edges to those connecting included nodes
+  const edges = data.edges.filter(e => nodeById[e.source] && nodeById[e.target]);
+
+  // SVG setup with viewBox + zoom/pan
+  const svgEl = svg;
+  const W = 1000, H = 600;
+  svgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+
+  // Draw edges first (so nodes appear above)
+  const NS = 'http://www.w3.org/2000/svg';
+  const edgeGroup = document.createElementNS(NS, 'g');
+  svgEl.appendChild(edgeGroup);
+  const lines = [];
+  edges.forEach(e => {
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('stroke', '#3a3f50');
+    line.setAttribute('stroke-width', Math.min(3, 0.4 + e.weight * 0.3));
+    line.setAttribute('opacity', '0.5');
+    // Hover title clarifies what an edge means.
+    const t = document.createElementNS(NS, 'title');
+    const srcName = nodeById[e.source]?.name || e.source;
+    const tgtName = nodeById[e.target]?.name || e.target;
+    const kindLabel = e.kind === 'co_occurrence' ? 'co-occur' : (e.kind || 'edge');
+    t.textContent = `${srcName} ↔ ${tgtName}  (${kindLabel}, weight=${e.weight})`;
+    line.appendChild(t);
+    edgeGroup.appendChild(line);
+    e._el = line;
+    lines.push(e);
+  });
+
+  // Draw nodes
+  const nodeGroup = document.createElementNS(NS, 'g');
+  svgEl.appendChild(nodeGroup);
+  data.nodes.forEach(n => {
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('cursor', 'grab');
+    const c = document.createElementNS(NS, 'circle');
+    c.setAttribute('r', n.r);
+    c.setAttribute('fill', KIND_COLORS[n.kind] || '#888');
+    c.setAttribute('stroke', '#0a0c10');
+    c.setAttribute('stroke-width', '1.5');
+    g.appendChild(c);
+    const text = document.createElementNS(NS, 'text');
+    text.setAttribute('font-size', Math.max(9, Math.min(14, 8 + n.r * 0.4)));
+    text.setAttribute('fill', '#d8dee9');
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('dy', -n.r - 4);
+    text.setAttribute('pointer-events', 'none');
+    text.textContent = n.name.length > 20 ? n.name.slice(0, 18) + '…' : n.name;
+    g.appendChild(text);
+    // Title for hover
+    const title = document.createElementNS(NS, 'title');
+    title.textContent = `${n.kind}: ${n.name}  (${n.mentions} mentions)`;
+    g.appendChild(title);
+    nodeGroup.appendChild(g);
+    n._el = g;
+
+    // Drag handling
+    let dragging = false;
+    g.addEventListener('mousedown', (ev) => {
+      dragging = true;
+      n.fx = n.x; n.fy = n.y;
+      g.setAttribute('cursor', 'grabbing');
+      ev.preventDefault();
+    });
+    window.addEventListener('mousemove', (ev) => {
+      if (!dragging) return;
+      const rect = svgEl.getBoundingClientRect();
+      const x = ((ev.clientX - rect.left) / rect.width) * W;
+      const y = ((ev.clientY - rect.top) / rect.height) * H;
+      n.fx = x; n.fy = y;
+      n.x = x; n.y = y;
+    });
+    window.addEventListener('mouseup', () => {
+      if (dragging) {
+        dragging = false;
+        g.setAttribute('cursor', 'grab');
+        // Release pin after a moment
+        setTimeout(() => { n.fx = null; n.fy = null; }, 200);
+      }
+    });
+  });
+
+  // Stop previous simulation
+  if (_graphSim) cancelAnimationFrame(_graphSim);
+
+  // Force-directed simulation
+  const k = 0.04;        // spring strength
+  const idealLen = 80;   // target edge length
+  const charge = 600;    // node repulsion
+  const damping = 0.85;
+  const cx = W / 2, cy = H / 2;
+
+  function step() {
+    // Reset forces
+    data.nodes.forEach(n => { n.vx *= damping; n.vy *= damping; });
+
+    // Repulsion between all node pairs
+    for (let i = 0; i < data.nodes.length; i++) {
+      for (let j = i + 1; j < data.nodes.length; j++) {
+        const a = data.nodes[i], b = data.nodes[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist2 = dx*dx + dy*dy + 0.1;
+        const force = charge / dist2;
+        const dist = Math.sqrt(dist2);
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        a.vx -= fx; a.vy -= fy;
+        b.vx += fx; b.vy += fy;
+      }
+    }
+
+    // Spring along edges
+    edges.forEach(e => {
+      const a = nodeById[e.source], b = nodeById[e.target];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.sqrt(dx*dx + dy*dy) + 0.1;
+      const force = (dist - idealLen) * k * Math.min(1, e.weight * 0.3);
+      const fx = (dx / dist) * force;
+      const fy = (dy / dist) * force;
+      a.vx += fx; a.vy += fy;
+      b.vx -= fx; b.vy -= fy;
+    });
+
+    // Centering force
+    data.nodes.forEach(n => {
+      n.vx += (cx - n.x) * 0.001;
+      n.vy += (cy - n.y) * 0.001;
+    });
+
+    // Apply velocities (skip pinned nodes)
+    data.nodes.forEach(n => {
+      if (n.fx != null) { n.x = n.fx; n.y = n.fy; return; }
+      n.x += n.vx;
+      n.y += n.vy;
+      // Bounds
+      n.x = Math.max(20, Math.min(W - 20, n.x));
+      n.y = Math.max(20, Math.min(H - 20, n.y));
+      n._el.setAttribute('transform', `translate(${n.x}, ${n.y})`);
+    });
+    lines.forEach(e => {
+      const a = nodeById[e.source], b = nodeById[e.target];
+      e._el.setAttribute('x1', a.x);
+      e._el.setAttribute('y1', a.y);
+      e._el.setAttribute('x2', b.x);
+      e._el.setAttribute('y2', b.y);
+    });
+    _graphSim = requestAnimationFrame(step);
+  }
+  step();
+}
+
+// init
+loadStats();
+</script>
+
+</body>
+</html>

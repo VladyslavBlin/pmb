@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check src/ tests/ --output-format=github
+        continue-on-error: true
+
+      - name: Run core tests
+        run: |
+          pytest tests/test_graph.py \
+                 tests/test_persons.py \
+                 tests/test_goals_chains.py \
+                 tests/test_fact_tree.py \
+                 tests/test_recall_cache.py \
+                 tests/test_config.py \
+                 tests/test_redact.py \
+                 tests/test_causation.py \
+                 -q --tb=short
+
+  smoke:
+    name: CLI smoke (ubuntu, py3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - run: pmb --help
+      - run: pmb stats
+      - run: pmb config list
