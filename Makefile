@@ -2,16 +2,16 @@
 
 help:
 	@echo "PMB development targets:"
-	@echo "  make install      — pip install -e ."
-	@echo "  make dev          — install + dev tools (pytest, ruff, textual)"
-	@echo "  make test         — run unit tests"
-	@echo "  make lint         — ruff check"
-	@echo "  make format       — ruff format"
-	@echo "  make clean        — remove build artefacts and __pycache__"
-	@echo "  make bench        — full LoCoMo benchmark (10 conversations, ~30 min)"
-	@echo "  make bench-quick  — quick smoke benchmark (3 conversations, ~3 min)"
-	@echo "  make tui          — launch terminal UI"
-	@echo "  make dashboard    — launch web dashboard on :8765"
+	@echo "  make install      - pip install -e ."
+	@echo "  make dev          - install + dev tools (pytest, ruff, textual)"
+	@echo "  make test         - run unit tests"
+	@echo "  make lint         - ruff check"
+	@echo "  make format       - ruff format"
+	@echo "  make clean        - remove build artefacts and __pycache__"
+	@echo "  make bench        - full LoCoMo benchmark (10 conversations, ~30 min)"
+	@echo "  make bench-quick  - quick smoke benchmark (3 conversations, ~3 min)"
+	@echo "  make tui          - launch terminal UI"
+	@echo "  make dashboard    - launch web dashboard on :8765"
 
 install:
 	pip install -e .

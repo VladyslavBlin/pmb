@@ -2,14 +2,14 @@
 
 All notable changes to PMB are documented here.
 
-## [0.1.0] — Initial public release
+## [0.1.0] - Initial public release
 
 ### Highlights
 
 - Single-file install: `pip install -e .` exposes `pmb` on `$PATH`.
-- 91.6 % evidence-recall@10 on LoCoMo full 10-conversation run (vs published mem0 / Letta / Zep numbers of 70–80 %).
-- 90–140 ms p50 recall latency, 2 ms async writes.
-- 13 semantic layers, 5 access paths, 3 tiers — every layer optional and configurable.
+- 91.6 % evidence-recall@10 on LoCoMo full 10-conversation run (vs published mem0 / Letta / Zep numbers of 70-80 %).
+- 90-140 ms p50 recall latency, 2 ms async writes.
+- 13 semantic layers, 5 access paths, 3 tiers - every layer optional and configurable.
 - Web dashboard + 5-tab terminal TUI for inspection.
 - MCP server for Claude Code, Codex CLI, Cursor.
 - Optional Ollama integration for fully-local LLM ops (consolidation, dedup verify, pmb-chat).
@@ -25,12 +25,12 @@ All notable changes to PMB are documented here.
 
 ### Tools and surfaces
 
-- `pmb tui` — five tabs: Memory, Recall, Stats, Dedup, Tune
-- `pmb dashboard` — HTTP dashboard on :8765 with Graph, Events, Performance, Duplicates, Recall Debug
-- `pmb tune` — settings-only TUI (67 knobs)
-- `pmb ollama` — health, install/use models, smoke test
-- `pmb connect codex | claude | cursor` — wires MCP into the agent's config and rules file
-- `pmb dedupe` / `pmb regraph` / `pmb prune-graph` — maintenance ops
+- `pmb tui` - five tabs: Memory, Recall, Stats, Dedup, Tune
+- `pmb dashboard` - HTTP dashboard on :8765 with Graph, Events, Performance, Duplicates, Recall Debug
+- `pmb tune` - settings-only TUI (67 knobs)
+- `pmb ollama` - health, install/use models, smoke test
+- `pmb connect codex | claude | cursor` - wires MCP into the agent's config and rules file
+- `pmb dedupe` / `pmb regraph` / `pmb prune-graph` - maintenance ops
 
 ### Settings (67 across 9 categories)
 

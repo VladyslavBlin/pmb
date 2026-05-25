@@ -1,12 +1,12 @@
 <div align="center">
 
-# 🧠 PMB — Personal Memory Brain
+# 🧠 PMB - Personal Memory Brain
 
 ### Local-first persistent memory for AI coding agents.
 ### Beats mem0 / Letta / Zep on retrieval. Runs on your machine. No API keys.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
 [![LoCoMo Recall](https://img.shields.io/badge/LoCoMo%20recall%4010-91.6%25-success.svg)](#benchmarks)
 [![Latency](https://img.shields.io/badge/p50%20latency-90ms-success.svg)](#benchmarks)
@@ -23,17 +23,17 @@
 Your AI coding agent forgets everything between sessions.
 
 ```
-You (Monday):     "Remember — we picked Postgres over MySQL because of JSONB."
+You (Monday):     "Remember - we picked Postgres over MySQL because of JSONB."
 Agent (Tuesday):  "What database does your project use?"
 You:              😡
 ```
 
-You can paste context every time. You can keep notes in another tool. Or you can give your agent a real memory that survives across sessions, across tools, across machine restarts — without sending your data to anyone.
+You can paste context every time. You can keep notes in another tool. Or you can give your agent a real memory that survives across sessions, across tools, across machine restarts - without sending your data to anyone.
 
 **That's PMB.**
 
 ```
-You (Monday):     "Remember — we picked Postgres over MySQL because of JSONB."
+You (Monday):     "Remember - we picked Postgres over MySQL because of JSONB."
                     └────────► PMB stores it (2 ms, on your disk)
 
 You (Tuesday):    "What database do we use?"
@@ -47,8 +47,8 @@ Agent:            "Postgres, picked over MySQL for JSONB support."
 
 |                          | PMB                  | mem0       | Letta      | Zep        |
 | :----------------------- | :------------------: | :--------: | :--------: | :--------: |
-| **LoCoMo recall@10**     | **91.6 %**           | ~70–75 %   | ~75–80 %   | ~80 %      |
-| **p50 latency**          | **~90 ms**           | 1–3 s      | 1–3 s      | 1–3 s      |
+| **LoCoMo recall@10**     | **91.6 %**           | ~70-75 %   | ~75-80 %   | ~80 %      |
+| **p50 latency**          | **~90 ms**           | 1-3 s      | 1-3 s      | 1-3 s      |
 | **Runs locally**         | ✅                   | ❌         | ❌         | ❌         |
 | **API key required**     | ❌                   | ✅         | ✅         | ✅         |
 | **Per-call cost**        | $0                   | $$         | $$         | $$         |
@@ -69,7 +69,7 @@ Agent:            "Postgres, picked over MySQL for JSONB support."
 > python -m venv .venv && source .venv/bin/activate
 > pip install -e .
 > pmb connect codex          # or claude / cursor
-> # restart your agent and say "remember — I prefer Postgres"
+> # restart your agent and say "remember - I prefer Postgres"
 > ```
 
 ### Detailed
@@ -110,11 +110,11 @@ and appends a tiny rule block to `AGENTS.md` / `CLAUDE.md`.
 
 | What you say                                | What PMB does                                    |
 | :------------------------------------------ | :----------------------------------------------- |
-| `"remember — my cat is allergic to chicken"` | record a pinned fact (importance 0.95)           |
+| `"remember - my cat is allergic to chicken"` | record a pinned fact (importance 0.95)           |
 | `"I work on the pmb-dashboard project"`     | record a fact about you/your project             |
 | `"what did I research about Next.js?"`      | pulls last research summaries                    |
 | `"why did we pick Postgres?"`               | recalls the project decision                     |
-| `"what is JWT?"`                            | **does nothing** — general questions bypass PMB  |
+| `"what is JWT?"`                            | **does nothing** - general questions bypass PMB  |
 
 **4. Inspect what's stored.**
 
@@ -181,7 +181,7 @@ python scripts/benchmarks/benchmark_locomo.py --n-conversations 10  # full run
                                          │  MCP (Model Context Protocol)
                                          ▼
                       ┌─────────────────────────────────────────────┐
-                      │  PMB MCP server  —  12 tools by default     │
+                      │  PMB MCP server  -  12 tools by default     │
                       │  record_batch · recall · pin · list_goals · │
                       │  recent_activity · what_just_happened · …   │
                       └──────────────────┬──────────────────────────┘
@@ -277,13 +277,13 @@ PMB is **lazy by default**. The AI only touches it on explicit triggers:
 │ Tracked metric changed               │ milestone in named chain                │
 │ User asked an info question          │ optional 1-line research summary        │
 ├──────────────────────────────────────┼─────────────────────────────────────────┤
-│ "what is Next.js?" (general Q)       │ ❌ no save, no recall — answers directly│
+│ "what is Next.js?" (general Q)       │ ❌ no save, no recall - answers directly│
 │ "how do I write a for loop?"         │ ❌ no save, no recall                   │
 │ Debugging / coding help              │ ❌ no save, no recall                   │
 └──────────────────────────────────────┴─────────────────────────────────────────┘
 ```
 
-This is the design — PMB is a memory for **you**, not a log of every Q&A.
+This is the design - PMB is a memory for **you**, not a log of every Q&A.
 
 ---
 
@@ -338,7 +338,7 @@ pmb config set recall.top_k 10           # one-liner from shell
 | `recall.recency_half_life_days` | 30 | how fast recent events outweigh old ones           |
 | `dedup.cosine_high`       | 0.92    | merge threshold (higher = more conservative)       |
 | `dedup.enable_semantic`   | true    | turn off to rely on exact-text dedup only          |
-| `embedding.backend`       | sentence-transformers | switch to `fastembed` for 3–5× faster embed |
+| `embedding.backend`       | sentence-transformers | switch to `fastembed` for 3-5× faster embed |
 | `mcp.record_batch_async`  | true    | fire-and-forget MCP writes                         |
 | `decay.factor_per_day`    | 0.985   | set to 1.0 to disable forgetting                   |
 | `consolidate.auto_trigger`| false   | turn on for nightly LLM consolidation              |
@@ -386,7 +386,7 @@ Full guide: [`docs/SETUP_OLLAMA.md`](docs/SETUP_OLLAMA.md).
 
 - **Local only.** PMB itself doesn't open any network connections. All data sits in `~/.pmb/`.
 - **No telemetry.** PMB doesn't phone home, has no analytics, no usage reporting.
-- **The agent has its own networking.** Claude Code talks to api.anthropic.com, Codex to OpenAI, etc. PMB has no control over that — but PMB doesn't add a second channel.
+- **The agent has its own networking.** Claude Code talks to api.anthropic.com, Codex to OpenAI, etc. PMB has no control over that - but PMB doesn't add a second channel.
 - **Secret redaction.** `record_fact` runs a regex scrubber over content (API keys, tokens, AWS/GCP creds patterns). It's not bulletproof; don't deliberately feed PMB secrets.
 - **Single-user model.** Anyone with read access to `~/.pmb/workspaces/<id>/events.sqlite` can read all your memory.
 
@@ -409,8 +409,8 @@ See [`SECURITY.md`](SECURITY.md) for the full threat model and vulnerability rep
 - [x] 91.6 % LoCoMo evidence-recall@10
 
 ### Considering for v0.2
-- [ ] Persistent daemon mode — `pmb daemon start`, every Codex session connects to a hot process (no cold start)
-- [ ] PyPI publication — `pip install pmb`
+- [ ] Persistent daemon mode - `pmb daemon start`, every Codex session connects to a hot process (no cold start)
+- [ ] PyPI publication - `pip install pmb`
 - [ ] Web dashboard: workspace switcher, settings tab
 - [ ] LLM-judge benchmark wired into CI for regression catching
 - [ ] Auto-backup / export-import commands
@@ -436,8 +436,8 @@ Pasting works for one or two facts. PMB survives across **every** session of **e
 
 - They're cloud services with per-call costs and rate limits.
 - They send your conversations to their servers.
-- On the public LoCoMo benchmark, PMB recalls more correctly (91.6 % vs 70–80 %).
-- They're 10–30× slower per call.
+- On the public LoCoMo benchmark, PMB recalls more correctly (91.6 % vs 70-80 %).
+- They're 10-30× slower per call.
 
 If those trade-offs are acceptable for you, by all means use them. PMB is for people who want local + fast + free + accurate, in that order.
 </details>
@@ -445,7 +445,7 @@ If those trade-offs are acceptable for you, by all means use them. PMB is for pe
 <details>
 <summary><b>Will PMB slow down my AI agent?</b></summary>
 
-Writes: no — MCP returns in ~2 ms (fire-and-forget). Reads: ~90 ms warm, ~100 ms cold (BM25 fallback). The agent's own LLM thinking is the dominant latency in any chat turn, by 10–100×.
+Writes: no - MCP returns in ~2 ms (fire-and-forget). Reads: ~90 ms warm, ~100 ms cold (BM25 fallback). The agent's own LLM thinking is the dominant latency in any chat turn, by 10-100×.
 
 If you suspect PMB specifically is slow, open `pmb tui` → tab [3] Stats. It shows the actual per-call timings.
 </details>
@@ -453,7 +453,7 @@ If you suspect PMB specifically is slow, open `pmb tui` → tab [3] Stats. It sh
 <details>
 <summary><b>What if I use multiple projects?</b></summary>
 
-PMB defaults to one global workspace (your personal memory follows you across projects). If you want isolation per project, drop a `.pmb/workspace.yaml` in each project root with a unique `id` — PMB picks it up automatically.
+PMB defaults to one global workspace (your personal memory follows you across projects). If you want isolation per project, drop a `.pmb/workspace.yaml` in each project root with a unique `id` - PMB picks it up automatically.
 </details>
 
 <details>
@@ -465,7 +465,7 @@ Anything that speaks MCP: Claude Code, Codex CLI, Cursor, and any future tool th
 <details>
 <summary><b>Can I see what was stored?</b></summary>
 
-Three ways: `pmb tui` (Memory tab), `pmb dashboard` (Events), or just `sqlite3 ~/.pmb/workspaces/<id>/events.sqlite` and run SQL. The store is plain SQLite — nothing proprietary.
+Three ways: `pmb tui` (Memory tab), `pmb dashboard` (Events), or just `sqlite3 ~/.pmb/workspaces/<id>/events.sqlite` and run SQL. The store is plain SQLite - nothing proprietary.
 </details>
 
 <details>
@@ -477,7 +477,7 @@ Three ways: `pmb tui` (Memory tab), `pmb dashboard` (Events), or just `sqlite3 ~
 <details>
 <summary><b>What if my workspace gets corrupted?</b></summary>
 
-SQLite is robust; the `mcp_calls` and `events` tables are append-mostly. Worst case, copy `~/.pmb/workspaces/<id>/` and start fresh — nothing else depends on this state.
+SQLite is robust; the `mcp_calls` and `events` tables are append-mostly. Worst case, copy `~/.pmb/workspaces/<id>/` and start fresh - nothing else depends on this state.
 
 Auto-backup is on the v0.2 roadmap.
 </details>
@@ -492,7 +492,7 @@ Because it's personal (not a team product), it stores memory (not just chat hist
 
 ## 🤝 Contributing
 
-PRs welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) first — it explains where things go, what's in scope, and what's not.
+PRs welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) first - it explains where things go, what's in scope, and what's not.
 
 In short:
 - One concern per PR.
@@ -503,9 +503,11 @@ In short:
 
 ## 📄 License
 
-MIT — see [`LICENSE`](LICENSE).
+**Apache License 2.0** - see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
-If you use PMB in a paper or product, citation is appreciated but not required — see [`CITATION.cff`](CITATION.cff).
+Same license as **mem0**, **Letta**, and **Zep** community editions. Apache 2.0 includes an explicit patent grant from every contributor - important for AI/ML projects where patent ambiguity can otherwise scare off enterprise users.
+
+If you use PMB in a paper or product, citation is appreciated but not required - see [`CITATION.cff`](CITATION.cff).
 
 ---
 

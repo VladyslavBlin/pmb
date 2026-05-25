@@ -1,4 +1,4 @@
-# PMB + Ollama — fully-local setup
+# PMB + Ollama - fully-local setup
 
 This guide is for anyone who wants PMB to run **completely offline**: no Anthropic key, no OpenAI key, nothing sent to the cloud. The vector embedder is local (sentence-transformers). The optional LLM operations (consolidation, dedup verification, `pmb-chat`) go through Ollama running on the same machine.
 
@@ -10,7 +10,7 @@ This guide is for anyone who wants PMB to run **completely offline**: no Anthrop
 
 That's it. No accounts, no API keys.
 
-## Step 1 — install Ollama
+## Step 1 - install Ollama
 
 Linux / macOS:
 
@@ -26,9 +26,9 @@ Start it:
 ollama serve              # runs in foreground; use & to background it on Unix
 ```
 
-If you're on Windows the installer registers a service, so `ollama serve` may already be running. Check with `curl http://localhost:11434/api/tags` — anything but a connection error means it's up.
+If you're on Windows the installer registers a service, so `ollama serve` may already be running. Check with `curl http://localhost:11434/api/tags` - anything but a connection error means it's up.
 
-## Step 2 — pull a model
+## Step 2 - pull a model
 
 PMB needs one Ollama model for LLM operations. Pick by RAM budget:
 
@@ -45,7 +45,7 @@ ollama pull llama3.1:8b
 
 (Replace with another tag if you chose a different preset.)
 
-## Step 3 — install PMB
+## Step 3 - install PMB
 
 ```bash
 git clone <repo-url> pmb
@@ -55,7 +55,7 @@ source .venv/bin/activate         # Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-## Step 4 — point PMB at Ollama
+## Step 4 - point PMB at Ollama
 
 ```bash
 pmb ollama use balanced
@@ -88,9 +88,9 @@ pmb ollama test
 
 Asks the model to reply "PONG". If you see PONG-ish text in under ~30 s, you're good.
 
-## Step 5 — hook up your AI agent
+## Step 5 - hook up your AI agent
 
-The agent itself (Claude Code / Codex CLI / Cursor) still uses its own LLM — PMB is *memory*, not the agent's brain. PMB only uses Ollama internally for its own sleep-mode operations.
+The agent itself (Claude Code / Codex CLI / Cursor) still uses its own LLM - PMB is *memory*, not the agent's brain. PMB only uses Ollama internally for its own sleep-mode operations.
 
 ```bash
 pmb connect codex     # or claude / cursor
@@ -158,7 +158,7 @@ pmb config set chat.transport anthropic
 export ANTHROPIC_API_KEY=...
 ```
 
-Your stored memory doesn't change — only the LLM provider for sleep-mode ops.
+Your stored memory doesn't change - only the LLM provider for sleep-mode ops.
 
 ## Updating the Ollama model
 

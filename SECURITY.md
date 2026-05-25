@@ -30,6 +30,6 @@ We will acknowledge within a few days and aim to publish a fix or workaround wit
 
 ## Out of scope
 
-- Confidentiality of data the user *chooses* to record. PMB is a memory store — if you feed it secrets they will be stored. Use `record_fact ... metadata={"redact": true}` or rely on the built-in regex redactor for known secret shapes.
+- Confidentiality of data the user *chooses* to record. PMB is a memory store - if you feed it secrets they will be stored. Use `record_fact ... metadata={"redact": true}` or rely on the built-in regex redactor for known secret shapes.
 - Multi-user isolation. PMB is single-user. Anyone with access to your `~/.pmb/` directory can read all your memory.
 - Network-level attacks on Ollama or LanceDB. Those are upstream concerns.

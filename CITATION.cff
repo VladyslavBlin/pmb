@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: PMB — Personal Memory Brain
+title: PMB - Personal Memory Brain
 message: >-
   If you use PMB in published research or build on top of it,
   please cite this software.
@@ -17,5 +17,5 @@ keywords:
   - retrieval
   - ai-agent
   - rag
-license: MIT
+license: Apache-2.0
 version: 0.1.0

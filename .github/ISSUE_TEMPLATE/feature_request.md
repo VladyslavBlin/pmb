@@ -25,4 +25,4 @@ PMB will not grow:
 - LLM provider integrations beyond Anthropic + OpenAI + Ollama
 - "agent-like" features that belong in the agent, not in the memory layer
 
-If your idea touches any of these, the PR will probably be declined — open an issue first to discuss.
+If your idea touches any of these, the PR will probably be declined - open an issue first to discuss.

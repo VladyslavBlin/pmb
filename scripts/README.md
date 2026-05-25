@@ -33,7 +33,7 @@ Small examples for newcomers.
 
 | Script | What it does |
 |---|---|
-| `e2e_test.py` | Full pmb usage in one file — write/read/inspect. |
+| `e2e_test.py` | Full pmb usage in one file - write/read/inspect. |
 | `demo_seed.py` | Seed a fresh workspace with example facts. |
 | `demo_graph.py` | Build a small entity graph and dump stats. |
 

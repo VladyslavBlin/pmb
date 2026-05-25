@@ -28,17 +28,17 @@ You should see **88 passed**.
 
 ```
 src/pmb/
-  core/             — engine, events, search, workspace, recall_cache
-  graph/            — entities, persons, store (SQLite-backed)
-  reasoning/        — facts, reflect, causation, arcs, temporal, dedup, typo_fix
-  mcp/              — FastMCP server, perf tracking, tools schema
-  dashboard/        — local web UI (HTTP, no framework)
-  cli/              — typer entry points (main, tui_*, ollama_cmd, connect)
-  agent_wrapper/    — pmb-chat (optional standalone chat loop)
-  health/           — consolidation, doctor checks
-  eval/             — LoCoMo judge helpers
-tests/              — pytest, no fixtures spanning files
-scripts/            — benchmarks, demos, profilers
+  core/             - engine, events, search, workspace, recall_cache
+  graph/            - entities, persons, store (SQLite-backed)
+  reasoning/        - facts, reflect, causation, arcs, temporal, dedup, typo_fix
+  mcp/              - FastMCP server, perf tracking, tools schema
+  dashboard/        - local web UI (HTTP, no framework)
+  cli/              - typer entry points (main, tui_*, ollama_cmd, connect)
+  agent_wrapper/    - pmb-chat (optional standalone chat loop)
+  health/           - consolidation, doctor checks
+  eval/             - LoCoMo judge helpers
+tests/              - pytest, no fixtures spanning files
+scripts/            - benchmarks, demos, profilers
 ```
 
 ## Where to add things
@@ -69,7 +69,7 @@ scripts/            — benchmarks, demos, profilers
 
 - One concern per PR.
 - Include a short description of what changed and **a benchmark line** if recall accuracy or latency could be affected.
-- Updating the README's benchmark numbers is fine when you have new data — link to the run that produced them.
+- Updating the README's benchmark numbers is fine when you have new data - link to the run that produced them.
 
 ## What we are not looking for
 
@@ -79,4 +79,12 @@ scripts/            — benchmarks, demos, profilers
 
 ## Filing issues
 
-Useful issues include: a minimal repro (or a workspace dump), the version of PMB (`pip show pmb`), and what command/agent triggered it. "It feels slow" without timing data is harder to act on — `pmb tui` → `[3] Stats` shows the real numbers.
+Useful issues include: a minimal repro (or a workspace dump), the version of PMB (`pip show pmb`), and what command/agent triggered it. "It feels slow" without timing data is harder to act on - `pmb tui` → `[3] Stats` shows the real numbers.
+
+## Licensing of contributions
+
+PMB is licensed under **Apache License 2.0** (see [`LICENSE`](LICENSE)).
+
+By submitting a pull request, you agree that your contribution is licensed under the same terms - this is the default behaviour spelled out in Apache 2.0 §5 ("Submission of Contributions"). No separate CLA, no sign-off chain. Just open the PR.
+
+If your contribution includes code or assets you did not write, list their origin and license in the PR description so we can add them to [`NOTICE`](NOTICE).

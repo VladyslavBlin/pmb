@@ -1,6 +1,6 @@
-# Agent-wrapper — concrete N-week plan
+# Agent-wrapper - concrete N-week plan
 
-This package is the **scaffold** for what the original pitch called "mechanic 1: smart in-session compression". Doing it properly is a multi-week project because it's no longer a memory tool — it's a thin client around the Claude API that competes (in scope) with Claude Code / Cursor / Cline / Aider.
+This package is the **scaffold** for what the original pitch called "mechanic 1: smart in-session compression". Doing it properly is a multi-week project because it's no longer a memory tool - it's a thin client around the Claude API that competes (in scope) with Claude Code / Cursor / Cline / Aider.
 
 This document tells you exactly what's done and exactly what's left.
 
@@ -8,25 +8,25 @@ This document tells you exactly what's done and exactly what's left.
 
 ## Today (what exists in code)
 
-- [x] `budget.py` — token budget with `should_compact()` trigger
-- [x] `policy.py` — `CompressionPolicy` protocol + `DropOldestNarrative` baseline
-- [x] `loop.py` — `AgentLoop` that:
+- [x] `budget.py` - token budget with `should_compact()` trigger
+- [x] `policy.py` - `CompressionPolicy` protocol + `DropOldestNarrative` baseline
+- [x] `loop.py` - `AgentLoop` that:
   - auto-detects PMB workspace from cwd
   - calls `engine.recall(user_msg)` on first turn, injects into system prompt
   - talks to Anthropic via the SDK
   - persists every turn via `engine.remember(user, assistant)`
   - runs compaction policy before each turn
   - has a basic REPL with `/exit`, `/stats`, `/recall <q>` slash-commands
-- [x] `__main__.py` — `python -m pmb.agent_wrapper` entry
+- [x] `__main__.py` - `python -m pmb.agent_wrapper` entry
 - [x] Optional `--consolidate-on-exit` to run `pmb consolidate` when session ends
 
 This is enough to start a chat, see PMB memory injected, and have every turn persisted.
 
-It is **not** a usable coding agent — see "Not done" below.
+It is **not** a usable coding agent - see "Not done" below.
 
 ---
 
-## Not done — the real work
+## Not done - the real work
 
 ### Week 1: Selective compression (the actual research question)
 
@@ -71,7 +71,7 @@ After week 4, **honest decision point**: does the selective-compression result *
 
 ## Realistic estimate
 
-**4 weeks of focused work** to get to "I would use this instead of Claude Code for a real task". Beyond that — auth, multi-model, persistent settings, tool ecosystem — is open-ended.
+**4 weeks of focused work** to get to "I would use this instead of Claude Code for a real task". Beyond that - auth, multi-model, persistent settings, tool ecosystem - is open-ended.
 
 The single most important thing to validate **before week 4** is whether selective compression even helps. If by end of week 1 the eval harness can't show a measurable difference vs. `DropOldestNarrative`, the whole premise of the pitch is in doubt, and the cheaper alternative is just leaning harder on PMB consolidation + better `recall` injection inside Claude Code's existing MCP integration.
 

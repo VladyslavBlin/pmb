@@ -1,0 +1,31 @@
+PMB - Personal Memory Brain
+Copyright 2026 PMB contributors
+
+This product includes software developed by the PMB contributors
+(https://github.com/yourname/pmb).
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+----------------------------------------------------------------------
+
+Third-party components and their licenses:
+
+- sentence-transformers (Apache-2.0)  - local embedding models
+- LanceDB (Apache-2.0)                - local vector store
+- FastMCP (Apache-2.0)                - MCP server framework
+- rank-bm25 (Apache-2.0)              - BM25 lexical retrieval
+- Typer / Rich (MIT)                  - CLI rendering
+- Textual (MIT)                       - TUI workspace
+- NumPy (BSD-3-Clause)                - numerical routines
+- PyYAML (MIT)                        - config loading
+
+Optional dependencies pulled in by `pmb[all]`:
+- anthropic (MIT)                     - consolidation backend
+- fastembed (Apache-2.0)              - ONNX embeddings
+
+Full license texts for these dependencies ship inside the installed
+distributions (look under site-packages/<pkg>-*.dist-info/licenses/).
