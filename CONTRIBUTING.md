@@ -17,12 +17,22 @@ pip install pytest                   # for tests
 Verify:
 
 ```bash
-pytest tests/test_graph.py tests/test_persons.py tests/test_goals_chains.py \
-       tests/test_fact_tree.py tests/test_recall_cache.py tests/test_config.py \
-       tests/test_redact.py tests/test_causation.py -q
+make test        # 88 passed in ~80s — the same set CI runs
+make test-smoke  # 9 passed in ~5s   — import-weight regression tests
 ```
 
-You should see **88 passed**.
+## Running tests
+
+**Use `make test`, not `pytest tests/` directly.** The full pytest target (`pytest tests/`) has a known deadlock: several modules trigger parallel `huggingface_hub` model downloads against the same on-disk cache, and the second downloader blocks waiting for a lock the first one hasn't released. Symptom: pytest hangs forever on collection.
+
+| Target | What it runs | When to use |
+|---|---|---|
+| `make test` (= `make test-core`) | 8 deterministic files from `.github/workflows/ci.yml`, 88 tests | Default during development; matches CI |
+| `make test-smoke` | `tests/test_lightweight_imports.py`, 9 tests | After touching `pmb/__init__.py` or any module added to the lazy-attribute table |
+| `make test-all-WARN` | The full `tests/` directory | Only if your HF cache is already populated; otherwise it will hang |
+| `pytest tests/test_X.py` | One specific file | Reproducing a single failure |
+
+If you add a new test that depends on a HuggingFace download, please mark it (`@pytest.mark.heavy`, manual `pytest -k`) and document why - we'd rather not grow the deadlock surface.
 
 ## Project layout
 
@@ -70,6 +80,16 @@ scripts/            - benchmarks, demos, profilers
 - One concern per PR.
 - Include a short description of what changed and **a benchmark line** if recall accuracy or latency could be affected.
 - Updating the README's benchmark numbers is fine when you have new data - link to the run that produced them.
+
+## Hardening passes (style for cross-cutting refactors)
+
+If you are doing a sweeping technical-debt pass (lazy imports, exception handling, type annotations, etc.) please follow this protocol so it stays reviewable:
+
+1. **Phase 0 - inventory first.** Before changing anything, post the current state to the PR description: file/line numbers, what each call does, why it exists. For exception-handler changes specifically, see `docs/HARDENING_NOTES.md` for the categorisation we want to preserve.
+2. **One phase per commit.** Lazy imports, conftest, smoke tests, exception logging - each is its own commit so we can bisect a regression.
+3. **Run `make test` after every commit.** Not `make test-all-WARN`.
+4. **Behaviour-preserving by default.** If a change alters runtime behaviour (e.g. converting a silent fallback into an exception), call it out explicitly and add a test.
+5. **Update CHANGELOG.md.** Hardening counts as a real change; document the measurable effect (`import pmb` time, test count, etc.).
 
 ## What we are not looking for
 

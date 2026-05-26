@@ -1,4 +1,6 @@
+# --------------------------------------------------------------
 # Python
+# --------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -11,50 +13,106 @@ build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
 
+# --------------------------------------------------------------
 # Virtualenv
+# --------------------------------------------------------------
 .venv/
 venv/
 env/
+ENV/
 
-# IDE
+# --------------------------------------------------------------
+# IDE / editor
+# --------------------------------------------------------------
 .vscode/
 .idea/
 *.swp
-.DS_Store
-
-# Editor temp
+*.swo
+*.swn
 *~
 .#*
+\#*\#
 
+# --------------------------------------------------------------
+# OS
+# --------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+ehthumbs.db
+*.lnk
+
+# --------------------------------------------------------------
 # PMB runtime data — never commit
+# --------------------------------------------------------------
 .pmb/
 pmb_workspace/
+pmb_home/
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
 events.db*
+vocab_bridges.json
 
+# --------------------------------------------------------------
 # LanceDB
+# --------------------------------------------------------------
 *.lance/
 lance/
 
+# --------------------------------------------------------------
 # Logs / temp
+# --------------------------------------------------------------
 *.log
 .pmb_debug.log
 /tmp/
 .tmp/
+*.tmp
+*.bak
+*.orig
 
-# Benchmark outputs (locomo10.json is downloaded separately)
+# --------------------------------------------------------------
+# Benchmark / research outputs
+# --------------------------------------------------------------
 locomo10.json
 pmb_locomo*.json
+pmb_stress_*.json
+pmb_ab_*.json
 bench_results/
 recall_failures*.txt
+research_*.json
+ablation_*.json
 
-# OS
-Thumbs.db
-desktop.ini
-
+# --------------------------------------------------------------
 # Backups from `pmb connect`
+# --------------------------------------------------------------
 *.pmb-backup
+
+# --------------------------------------------------------------
+# Dev throwaways — prefixed with underscore
+# --------------------------------------------------------------
+scripts/benchmarks/_test_*.py
+scripts/benchmarks/_bench_*.py
+scripts/benchmarks/_profile_*.py
+scripts/benchmarks/_smoke_*.py
+scripts/**/_scratch_*
+
+# --------------------------------------------------------------
+# Secrets — never commit
+# --------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets.yaml
+credentials.json

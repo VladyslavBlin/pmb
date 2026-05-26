@@ -58,9 +58,15 @@ TIER_DECAY_FACTORS: dict[str, float] = {
 }
 
 
-# Promotion thresholds (re-access counts) for moving up the tiers
-PROMOTE_WORKING_TO_EPISODIC_ACCESS = 3
-PROMOTE_EPISODIC_TO_SEMANTIC_ACCESS = 10
+# Promotion thresholds (re-access counts) for moving up the tiers.
+# Lowered from 3/10 -> 2/7 after dogfooding showed that even sustained recall
+# loops rarely promote past the first threshold within a single session,
+# because query phrasings vary too much for any single event to hit top-K
+# three times. Two repeats is a more honest "this is a recurring topic"
+# signal, and 7 is enough to mark something as semantic without letting
+# one-off events drift up.
+PROMOTE_WORKING_TO_EPISODIC_ACCESS = 2
+PROMOTE_EPISODIC_TO_SEMANTIC_ACCESS = 7
 
 
 @dataclass

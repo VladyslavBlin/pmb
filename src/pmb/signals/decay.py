@@ -48,12 +48,26 @@ def boost_on_recall(current_importance: float, hit_score: float) -> float:
 
 def apply_decay(engine: "Engine", days_since_last_decay: float = 1.0) -> dict:
     """
-    Tier-aware daily decay.
+    Tier-aware daily decay - COMPOUNDED over `days_since_last_decay`.
 
-    Each tier has its own decay rate (working forgets fast, semantic slow).
+    Each tier has its own per-day decay factor (see core/events.py):
+      - working   factor=0.70  -> half-life ~1.94 days
+      - episodic  factor=0.985 -> half-life ~46 days
+      - semantic  factor=0.998 -> half-life ~346 days
+
+    Compounding: factor^N. So after 30 days of inactivity:
+      - working event: 0.70^30 = 2.25e-5  (effectively zero, archive-ready)
+      - episodic     : 0.985^30 = 0.636
+      - semantic     : 0.998^30 = 0.942
+
+    This is by design - working memory IS supposed to be ephemeral.
     Pinned events (importance >= 0.99) are still fully protected.
     Working-tier events that fall below threshold are archived MUCH sooner
-    than episodic/semantic ones — keeps the hot working memory clean.
+    than episodic/semantic ones - keeps the hot working memory clean.
+
+    `days_since_last_decay` is the time since this function was last
+    called for this workspace; the scheduler tracks this so calling
+    `apply_decay` daily vs weekly produces the same long-term curve.
     """
     from pmb.core.events import TIER_DECAY_FACTORS, TIER_WORKING
 

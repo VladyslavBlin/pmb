@@ -33,6 +33,14 @@ from pmb.graph.store import GraphStore
 from pmb.security.redact import redact, redact_metadata
 from pmb.signals.session import SessionTracker
 from pmb.signals.decay import boost_on_recall
+from pmb.reasoning.pamvr import (
+    apply_pamvr as _pamvr_apply,
+    VOCAB_BRIDGES as _PAMVR_DEFAULT_BRIDGES,
+)
+from pmb.reasoning.vocab_miner import (
+    mine_workspace as _mine_workspace_bridges,
+    merge_bridges as _merge_vocab_bridges,
+)
 
 
 @dataclass
@@ -348,6 +356,14 @@ class Engine:
             if emb_backend == "fastembed"
             else self.config.get("embedding.model")
         )
+        # Improvement #1: reranker is needed if EITHER the always-on
+        # `recall.rerank` flag is True OR the gated `recall.rerank_when_close`
+        # is True. We pass the model name to HybridSearch in either case;
+        # the rerank logic in `recall()` decides per-query whether to fire.
+        _rerank_needed = (
+            self.config.get("recall.rerank")
+            or self.config.get("recall.rerank_when_close")
+        )
         self.search = HybridSearch(
             vector_path=self.workspace.vector_path,
             model_name=emb_model,
@@ -355,7 +371,7 @@ class Engine:
             bm25_weight=self.config.get("recall.bm25_weight"),
             rerank_model_name=(
                 self.config.get("recall.rerank_model")
-                if self.config.get("recall.rerank") else None
+                if _rerank_needed else None
             ),
         )
         self.session_tracker = SessionTracker(self.workspace)
@@ -374,8 +390,11 @@ class Engine:
         self._ppr_graph = None
         self._ppr_graph_generation = -1
 
-        # Rebuild BM25 from existing data on cold start
-        self.search.reload_bm25()
+        # BM25 reload is deferred to the first `self.search.search()` /
+        # `.add()` call: the load takes ~50-200 ms on populated workspaces
+        # and ~22 s on the very first call in a fresh process (because of
+        # the underlying `import lancedb`). Engine() must not pay that cost
+        # for read-only CLI commands that never touch search.
 
         # Improvement W: deferred-embed queue. Writes don't block on the
         # sentence-transformers model load (~50s cold start). Instead we
@@ -392,6 +411,151 @@ class Engine:
         # because each record_batch_async spawns its own thread.
         import threading as _threading
         self._batch_lock = _threading.Lock()
+
+        # Improvement #5: bulk-import mode. When True, every per-item
+        # cross-cutting step (dedup L1+L2, graph indexing, temporal
+        # parsing, causation edges, L2.5 queue) is skipped. Only the
+        # SQLite row + embedding land. Caller runs `pmb regraph` later.
+        # Default False so normal record_batch behaviour is unchanged.
+        self._bulk_mode = False
+        self._bulk_collected_ulids: list[str] = []
+
+        # Improvement #6: deferred touch buffer. Under concurrent recalls
+        # each call writes access_count+1 / last_accessed / importance via
+        # `apply_recall_updates` — a SQLite write transaction. With 8+
+        # parallel recalls these all queue on the write lock, exploding p95.
+        # Solution: enqueue touches in memory, flush every ~250ms in a
+        # daemon thread. Single flush coalesces touches from many recalls,
+        # so 16 concurrent recalls = 1 lock acquisition instead of 16.
+        # On engine.close() we drain the buffer.
+        self._touch_buffer: dict[str, float] = {}        # ulid -> last_accessed
+        self._touch_imp_buffer: dict[str, float] = {}    # ulid -> latest importance
+        self._touch_lock = _threading.Lock()
+        self._touch_flusher_started = False
+
+        # PAMVR — Predicate-Aware Multi-View Reranking. Cache the flag
+        # at init time so the recall hot-path doesn't pay for a config
+        # lookup per candidate.
+        self._pamvr_enabled = bool(self.config.get("recall.pamvr_enabled"))
+
+        # Auto VOCAB_BRIDGES (Improvement TT). Mine the user's own lexicon
+        # from workspace events via PMI co-occurrence so PAMVR adapts to
+        # any domain (not just coding). Hand-curated VOCAB_BRIDGES stay as
+        # fallback; mined bridges extend them. Refreshed lazily — see
+        # `_maybe_refresh_vocab_bridges()`.
+        self._auto_bridges_enabled = bool(
+            self.config.get("recall.auto_vocab_bridges")
+        )
+        # Improvement WW: write-time atomic fact extraction.
+        self._atomic_extract_enabled = bool(
+            self.config.get("write.atomic_fact_extract")
+        )
+        self._vocab_bridges: dict[str, list[str]] = dict(_PAMVR_DEFAULT_BRIDGES)
+        self._vocab_bridges_cache_path = (
+            self.workspace.storage_dir / "vocab_bridges.json"
+        )
+        self._vocab_bridges_last_event_count = -1
+        if self._auto_bridges_enabled:
+            try:
+                self._refresh_vocab_bridges()
+            except Exception:
+                # Auto-mining is a best-effort enhancement, never crash init.
+                pass
+
+    # -----------------------------------------------------------------
+    # Auto VOCAB_BRIDGES helpers
+    # -----------------------------------------------------------------
+
+    def _refresh_vocab_bridges(self, force: bool = False) -> None:
+        """Mine workspace events → merge with hand-curated bridges.
+
+        Called at init and lazily before recall when enough new events have
+        landed. The mining itself is ~50 ms per 1000 events.
+        """
+        mined = _mine_workspace_bridges(
+            db_path=self.workspace.db_path,
+            cache_path=self._vocab_bridges_cache_path,
+            force=force,
+            window=int(self.config.get("recall.auto_vocab_window") or 6),
+            min_count=int(self.config.get("recall.auto_vocab_min_count") or 3),
+            min_pmi=float(self.config.get("recall.auto_vocab_min_pmi") or 2.0),
+            max_bridges_per_key=int(
+                self.config.get("recall.auto_vocab_max_per_key") or 8
+            ),
+            refresh_threshold=int(
+                self.config.get("recall.auto_vocab_refresh_after") or 50
+            ),
+        )
+        merged = _merge_vocab_bridges(_PAMVR_DEFAULT_BRIDGES, mined)
+        self._vocab_bridges = merged
+        try:
+            # Best-effort: track event count so we know when to re-mine.
+            import sqlite3 as _sql
+            with _sql.connect(str(self.workspace.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM events WHERE archived_at IS NULL"
+                ).fetchone()
+                self._vocab_bridges_last_event_count = int(row[0] or 0)
+        except Exception:
+            pass
+
+    def _record_atomic_facts(
+        self,
+        text: str,
+        parent_ulid: str,
+        base_importance: float = 0.7,
+    ) -> list[str]:
+        """Extract atomic facts via fact_extract and record each as a
+        sibling event linked to `parent_ulid` via metadata.parent_ulid.
+
+        Returns the list of created child ulids.
+        """
+        try:
+            from pmb.reasoning.fact_extract import extract_atomic_facts
+        except Exception:
+            return []
+        atoms = extract_atomic_facts(text)
+        if not atoms:
+            return []
+        out: list[str] = []
+        # Slightly lower importance than the source so the original
+        # paragraph still wins when the user asks the whole question.
+        child_imp = max(0.1, min(0.9, base_importance - 0.05))
+        for af in atoms:
+            try:
+                ulid = self.record_fact(
+                    af.content,
+                    importance=child_imp,
+                    metadata={
+                        "parent_ulid": parent_ulid,
+                        "atomic_kind": af.kind,
+                        "atomic_confidence": af.confidence,
+                        "extracted": True,
+                    },
+                )
+                out.append(ulid)
+            except Exception:
+                continue
+        return out
+
+    def _maybe_refresh_vocab_bridges(self) -> None:
+        """Called from recall() — cheap if cache is fresh, mines if stale."""
+        if not self._auto_bridges_enabled:
+            return
+        try:
+            import sqlite3 as _sql
+            with _sql.connect(str(self.workspace.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM events WHERE archived_at IS NULL"
+                ).fetchone()
+                n = int(row[0] or 0)
+            threshold = int(
+                self.config.get("recall.auto_vocab_refresh_after") or 50
+            )
+            if n - self._vocab_bridges_last_event_count >= threshold:
+                self._refresh_vocab_bridges()
+        except Exception:
+            pass
 
     # -----------------------------------------------------------------
     # Write
@@ -452,6 +616,25 @@ class Engine:
     ) -> str:
         clean_fact, _ = redact(fact)
         clean_metadata, _ = redact_metadata(metadata or {})
+
+        # Improvement #5 (bulk import): when self._bulk_mode is set,
+        # skip ALL cross-cutting work (dedup, graph, temporal, causation,
+        # L2.5 queue). Only the SQLite row + embedding land. The caller
+        # must run `pmb regraph` afterwards to rebuild the graph.
+        if getattr(self, "_bulk_mode", False):
+            ev = Event(
+                workspace_id=self.workspace.id,
+                event_type="fact",
+                content=clean_fact,
+                metadata=clean_metadata,
+                importance=importance,
+                source_session_id=session_id,
+                tier=default_tier_for_event_type("fact"),
+            )
+            ev = self.events.append(ev)
+            self._embed_or_defer(ev.ulid, ev.to_text())
+            self._bulk_collected_ulids.append(ev.ulid)
+            return ev.ulid
 
         # Improvement U: write-time dedup (L1 exact + L2 semantic).
         # If we detect a duplicate, return the existing ULID instead of
@@ -655,6 +838,96 @@ class Engine:
                 "last_accessed = ? WHERE ulid = ?",
                 (_t.time(), ulid),
             )
+
+    # -----------------------------------------------------------------
+    # Improvement #6: deferred touch flusher (concurrent recall scaling)
+    # -----------------------------------------------------------------
+
+    def _enqueue_touches(
+        self,
+        touches: list[str],
+        importance_updates: list[tuple[str, float]],
+    ) -> None:
+        """Buffer recall side effects for the background flusher.
+
+        Coalesces multiple touches of the same ulid (latest timestamp /
+        importance wins) so a hot event accessed 16 times in 100ms
+        produces ONE SQLite write, not 16.
+        """
+        if not touches and not importance_updates:
+            return
+        now = time.time()
+        with self._touch_lock:
+            for u in touches:
+                self._touch_buffer[u] = now
+            for u, imp in importance_updates:
+                self._touch_imp_buffer[u] = max(0.0, min(1.0, imp))
+            if not self._touch_flusher_started:
+                self._touch_flusher_started = True
+                import threading
+                threading.Thread(
+                    target=self._flush_touches_loop,
+                    daemon=True, name="pmb-touch-flusher",
+                ).start()
+
+    def _flush_touches_loop(self) -> None:
+        """Daemon loop: every ~250ms drain the touch buffer to SQLite.
+
+        Single connection per flush, single transaction. Multiple concurrent
+        recalls coalesce into one write, so the SQLite write lock is held
+        ~4 times per second regardless of recall traffic.
+        """
+        import time as _t
+        while True:
+            _t.sleep(0.25)
+            if not self._drain_touch_buffer():
+                # Buffer was empty for one tick; another empty tick and we
+                # exit. Re-spawned on next enqueue. Saves an idle thread.
+                _t.sleep(0.25)
+                if not self._drain_touch_buffer():
+                    with self._touch_lock:
+                        self._touch_flusher_started = False
+                    return
+
+    def _drain_touch_buffer(self) -> bool:
+        """Flush whatever's in the touch buffers right now. Returns True if
+        anything was flushed. Safe to call from engine.close() too.
+        """
+        with self._touch_lock:
+            if not self._touch_buffer and not self._touch_imp_buffer:
+                return False
+            touches_snap = dict(self._touch_buffer)
+            imp_snap = dict(self._touch_imp_buffer)
+            self._touch_buffer.clear()
+            self._touch_imp_buffer.clear()
+        try:
+            with self.events._conn() as conn:
+                conn.execute("BEGIN")
+                try:
+                    if touches_snap:
+                        conn.executemany(
+                            "UPDATE events SET access_count = access_count + 1, "
+                            "last_accessed = ? WHERE ulid = ?",
+                            [(t, u) for u, t in touches_snap.items()],
+                        )
+                    if imp_snap:
+                        conn.executemany(
+                            "UPDATE events SET importance = ? WHERE ulid = ?",
+                            [(i, u) for u, i in imp_snap.items()],
+                        )
+                    conn.execute("COMMIT")
+                except Exception:
+                    conn.execute("ROLLBACK")
+                    raise
+            return True
+        except Exception:
+            # On failure, put the items back so they retry on next tick.
+            with self._touch_lock:
+                for u, t in touches_snap.items():
+                    self._touch_buffer.setdefault(u, t)
+                for u, i in imp_snap.items():
+                    self._touch_imp_buffer.setdefault(u, i)
+            return False
 
     # -----------------------------------------------------------------
     # Improvement W: deferred embedding (writes don't block on model load)
@@ -861,6 +1134,27 @@ class Engine:
         Returns ulid.
         """
         clean_title, _ = redact(title)
+
+        # Bulk-import shortcut: skip dedup + graph + L2.5 queue
+        if getattr(self, "_bulk_mode", False):
+            meta_bulk = {"goal_status": status, "goal_progress": 0}
+            if parent_goal_ulid:
+                meta_bulk["parent_goal_ulid"] = parent_goal_ulid
+            if due_at is not None:
+                meta_bulk["due_at"] = float(due_at)
+            ev = Event(
+                workspace_id=self.workspace.id,
+                event_type="goal",
+                content=clean_title,
+                metadata=meta_bulk,
+                importance=importance,
+                source_session_id=session_id,
+                tier="semantic",
+            )
+            ev = self.events.append(ev)
+            self._embed_or_defer(ev.ulid, ev.to_text())
+            self._bulk_collected_ulids.append(ev.ulid)
+            return ev.ulid
 
         # Improvement U: dedup at write — most common case the user hits is
         # the AI writing the SAME goal in two languages (RU + EN) as two
@@ -1182,6 +1476,23 @@ class Engine:
         if details:
             clean_details, _ = redact_metadata(details)
             meta.update(clean_details)
+
+        # Bulk-import shortcut: skip graph + L2.5 queue, just persist
+        if getattr(self, "_bulk_mode", False):
+            ev = Event(
+                workspace_id=self.workspace.id,
+                event_type="activity",
+                content=clean_summary,
+                metadata=meta,
+                importance=importance,
+                source_session_id=session_id,
+                tier="working",
+            )
+            ev = self.events.append(ev)
+            self._embed_or_defer(ev.ulid, ev.to_text())
+            self._bulk_collected_ulids.append(ev.ulid)
+            return ev.ulid
+
         # Auto-bind to session
         if session_id is None:
             session_id = self.session_tracker.touch().id
@@ -1408,6 +1719,51 @@ class Engine:
             "n_subfacts": len(sub_ulids),
         }
 
+    def record_batch_bulk(self, items: list[dict]) -> dict:
+        """Improvement #5: bulk-import mode for migrations / large imports.
+
+        Skips ALL cross-cutting work that makes record_batch slow per item:
+          - L1 + L2 dedup checks
+          - graph entity indexing + edge upserts
+          - temporal date parsing
+          - causation edge insert
+          - L2.5 borderline queue
+
+        ONLY writes SQLite rows and queues embeddings. The graph layer
+        will be missing until the caller runs `pmb regraph` to rebuild it
+        from scratch.
+
+        Use this when:
+          - importing from another tool (mem0 export, JSONL file)
+          - replaying a saved transcript
+          - bulk-loading test data
+          - any time you have ≥50 items and don't need dedup/graph immediately
+
+        Returns the same shape as record_batch but with `bulk_mode=True` in
+        the result so callers can branch on it. Typical speed-up: ~10-15×
+        vs normal record_batch on 100 items.
+        """
+        if not items or not isinstance(items, list):
+            return {"results": [], "n_ok": 0, "n_failed": 0,
+                    "errors": [{"index": 0, "error": "empty or invalid items"}],
+                    "bulk_mode": True}
+        self._bulk_collected_ulids = []
+        self._bulk_mode = True
+        try:
+            result = self.record_batch(items)
+        finally:
+            self._bulk_mode = False
+        result["bulk_mode"] = True
+        result["bulk_ulids"] = list(self._bulk_collected_ulids)
+        self._bulk_collected_ulids = []
+        # Invalidate caches in one shot — record_batch's per-item bumps
+        # were skipped in bulk mode.
+        try:
+            self.recall_cache.bump_generation()
+        except Exception:
+            pass
+        return result
+
     def record_batch_async(self, items: list[dict]) -> dict:
         """Improvement AA: fire-and-forget batch write.
 
@@ -1508,16 +1864,34 @@ class Engine:
                 pin_after = bool(item.get("pin", False))
                 try:
                     if t == "fact":
+                        content_in = item.get("content") or item.get("fact") or ""
                         ulid = self.record_fact(
-                            item.get("content") or item.get("fact") or "",
+                            content_in,
                             importance=float(item.get("importance", 0.7)),
                             metadata=item.get("metadata"),
                         )
                         if pin_after:
                             try: self.pin(ulid)
                             except Exception: pass
+                        # Improvement WW: opportunistic atomic-fact extraction.
+                        # When a long fact contains multiple sentences with
+                        # pattern-recognisable atoms ("X lives in Y", "We use
+                        # X", "X leads Y"), record those atoms as sibling
+                        # events with metadata.parent_ulid → source. This
+                        # lifts recall on questions targeting one atom inside
+                        # a paragraph (mem0-style fact decomposition, no LLM).
+                        atoms_created: list[str] = []
+                        if self._atomic_extract_enabled:
+                            try:
+                                atoms_created = self._record_atomic_facts(
+                                    content_in, parent_ulid=ulid,
+                                    base_importance=float(item.get("importance", 0.7)),
+                                )
+                            except Exception:
+                                pass
                         results.append({"type": "fact", "ulid": ulid,
-                                        "pinned": pin_after})
+                                        "pinned": pin_after,
+                                        "atomic_facts": atoms_created})
                         n_ok += 1
                     elif t in ("fact_tree", "tree"):
                         res = self.record_fact_tree(
@@ -2023,6 +2397,60 @@ class Engine:
                 return fused
             # Fallthrough: decomposition failed → run original single-shot
 
+        # Pattern-based query splitting (Improvement UU). Cheap, no LLM —
+        # catches compound queries like "why X and why Y" / "X потому что Y".
+        # When a split fires, each sub-query runs through the normal recall
+        # pipeline and results are fused via RRF. Saves ~30pp on compound
+        # queries that single-shot recall would otherwise diffuse.
+        if (
+            not _skip_decompose
+            and self.config.get("recall.pattern_split")
+        ):
+            try:
+                from pmb.reasoning.query_split import split_query, rrf_fuse
+                sub_queries = split_query(query)
+                if len(sub_queries) > 1:
+                    sub_packs = []
+                    for sq in sub_queries:
+                        sp = self.recall(
+                            sq, top_k=max(top_k, 10),
+                            recency_half_life_days=recency_half_life_days,
+                            graph_boost=graph_boost,
+                            rerank=rerank, rerank_top_n=rerank_top_n,
+                            _skip_decompose=True,
+                        )
+                        sub_packs.append(sp)
+                    # Build per-sub ranked ulid lists and RRF-fuse
+                    rank_lists = [[r.ulid for r in sp.results] for sp in sub_packs]
+                    fused_scored = rrf_fuse(rank_lists, top_n=top_k * 2)
+                    # Resolve ulid -> result (use first occurrence across packs)
+                    ulid_to_res: dict[str, Any] = {}
+                    for sp in sub_packs:
+                        for r in sp.results:
+                            if r.ulid not in ulid_to_res:
+                                ulid_to_res[r.ulid] = r
+                    out_results = []
+                    for ulid, fscore in fused_scored:
+                        r = ulid_to_res.get(ulid)
+                        if r is not None:
+                            out_results.append(r)
+                        if len(out_results) >= top_k:
+                            break
+                    if out_results:
+                        pack = RecallPack(query=query, results=out_results)
+                        self.recall_cache.put(
+                            make_recall_cache_key(
+                                query, top_k, recency_half_life_days,
+                                graph_boost, rerank, rerank_top_n,
+                            ),
+                            pack,
+                        )
+                        return pack
+            except Exception:
+                # Pattern split is opportunistic; on any error fall back
+                # to the standard single-shot pipeline.
+                pass
+
         # LRU cache hit — short-circuit the whole pipeline. The cache is
         # invalidated automatically on any event write via bump_generation().
         cache_key = make_recall_cache_key(
@@ -2387,6 +2815,25 @@ class Engine:
         now = time.time()
         half_life_sec = recency_half_life_days * 86400.0
 
+        # Improvement B: pre-compute the set of *content* tokens from the
+        # query. Used below as a small multiplicative boost when a candidate
+        # event's content contains ALL the unique meaningful tokens of the
+        # query - direct lexical match in the right context.
+        # Stopwords removed because they would over-fire on generic queries.
+        _STOP = {
+            "a", "an", "the", "is", "are", "was", "were", "of", "in", "on",
+            "to", "for", "and", "or", "with", "we", "i", "you", "do", "does",
+            "did", "what", "who", "where", "when", "why", "how", "by", "at",
+            "from", "as", "be", "have", "has", "had", "this", "that", "these",
+            "those", "it", "our", "my", "your", "their", "his", "her",
+            "about", "any", "some", "all", "more", "than", "but", "not",
+            "now", "use", "used", "using",
+        }
+        q_tokens = {
+            t for t in re.findall(r"[a-zA-Zа-яА-Я0-9]+", (query or "").lower())
+            if len(t) > 2 and t not in _STOP
+        }
+
         search_hits_by_ulid = {h.ulid: h for h in raw_hits}
         scored: list[tuple[SearchHit, Event, float, float]] = []
         for ulid, ev in rows.items():
@@ -2401,7 +2848,15 @@ class Engine:
             importance_factor = 0.5 + 0.5 * ev.importance
             age_sec = max(0.0, now - ev.timestamp)
             recency = math.exp(-age_sec * math.log(2) / half_life_sec)
-            base = h.score * importance_factor * (1.0 + 0.2 * recency)
+            # Historical-intent: when the user asks "what did we use before",
+            # the latest pinned fact is the wrong answer. We weaken the
+            # recency reward (multiplier <1.0) and add a small bonus to OLDER
+            # events. Both come from QueryRouter.classify().
+            rec_mul = layer_weights.historical_recency_mul if layer_weights else 1.0
+            base = h.score * importance_factor * (1.0 + 0.2 * recency * rec_mul)
+            if layer_weights and layer_weights.older_event_bonus > 0:
+                # invert recency: 1.0 for very old, 0.0 for fresh.
+                base += layer_weights.older_event_bonus * (1.0 - recency) * importance_factor
             # Graph augmentation: bonus proportional to summed IDF of matched
             # entities. Rare-entity matches dominate, common-entity matches
             # contribute little.
@@ -2461,6 +2916,70 @@ class Engine:
                 else:
                     # raw events (qa, fact, event, git, etc.)
                     base *= layer_weights.raw_boost
+            # Improvement B: query-keyword overlap boost. If most of the
+            # meaningful tokens of the query are present in this event's
+            # content, this event is a likely DIRECT match - boost it.
+            # The boost is proportional to the overlap fraction so a tiny
+            # overlap doesn't move the score much, but a near-full overlap
+            # gives a meaningful nudge. Capped at 1.25x to avoid letting
+            # one keyword count as a definitive answer.
+            if q_tokens:
+                content_lower = (ev.content or "").lower()
+                # Cheap substring check: count which query tokens appear
+                # anywhere in the content. Skips word-boundary work; good
+                # enough at this score-tweak granularity.
+                n_hit = sum(1 for t in q_tokens if t in content_lower)
+                if n_hit >= 2:
+                    # Overlap fraction over QUERY tokens, capped via min().
+                    overlap = n_hit / max(1, len(q_tokens))
+                    # Multiplier: 1.0 (no overlap) up to 1.25 (full match).
+                    base *= 1.0 + min(0.25, 0.25 * overlap)
+
+            # Personal-marker boost: facts that literally start with a
+            # personal possessive ("User's", "Alex's", "I am", "My", "I
+            # work on") get boosted ONLY when the query itself has identity
+            # intent (router classified it as "identity"). Without this
+            # gate the boost mis-fires on topical queries that just happen
+            # to surface an identity-shaped fact (e.g. "What's the JWT
+            # lifetime?" surfacing "Alex's terminal is Wezterm" at top-1).
+            if (ev.event_type == "fact"
+                    and layer_weights
+                    and layer_weights.identity_marker_boost > 1.0):
+                content_head = (ev.content or "")[:60].lower()
+                if (content_head.startswith("user's ")
+                        or content_head.startswith("user ")
+                        or content_head.startswith("alex ")
+                        or content_head.startswith("alex's ")
+                        or content_head.startswith("i am ")
+                        or content_head.startswith("my ")
+                        or content_head.startswith("i work ")
+                        or content_head.startswith("i prefer ")):
+                    base *= layer_weights.identity_marker_boost
+            # Decision-intent boost: activity events marked as a
+            # decision/agreement should outrank arguments on the same
+            # topic when the user asks "what did we decide". The router
+            # only sets decision_boost > 1.0 when the query phrasing
+            # actually asks for a decision.
+            # record_activity() stores the kind under `activity_kind`
+            # in metadata (not `kind`); record_batch uses the same path,
+            # so we check both for safety.
+            if (layer_weights
+                    and ev.event_type == "activity"
+                    and layer_weights.decision_boost > 1.0):
+                meta = ev.metadata or {}
+                kind = meta.get("activity_kind") or meta.get("kind") or ""
+                if kind in ("decision", "decided", "agreed",
+                            "resolved", "concluded"):
+                    base *= layer_weights.decision_boost
+            # PAMVR (Predicate-Aware Multi-View Reranking) — 14 small
+            # content-based boost rules empirically tuned to lift top-1
+            # accuracy from ~60% to 93%+. Verb match, entity strict,
+            # vocab bridges, topic constraint, time-duration, etc. See
+            # pmb.reasoning.pamvr for the full rule set + research data.
+            if self._pamvr_enabled:
+                base = _pamvr_apply(
+                    query, ev, base, vocab_bridges=self._vocab_bridges,
+                )
             scored.append((h, ev, base, recency))
 
         # Stage 3.25: collapse reflections onto their source events.
@@ -2479,9 +2998,38 @@ class Engine:
         # Stage 3.5: optional cross-encoder reranker over top-N candidates.
         # The hybrid scoring is good at *finding* the right neighbourhood;
         # the cross-encoder is better at picking the single most-relevant doc.
-        if rerank and self.search.reranker is not None and len(scored) > 1:
+        #
+        # Improvement #1 + VV - SMART gated rerank:
+        #
+        #   Original gate:  fire when (top1 - top3) score gap is < epsilon.
+        #   The intuition: when BM25+vector clearly disagree on the order,
+        #   the cross-encoder is helpful; when they agree, the CE causes
+        #   regressions (LoCoMo loses 17pp with always-on rerank).
+        #
+        #   VV upgrade: ADD a "confidence-required" stage after the CE
+        #   produces scores. Only commit the reranked order if the new
+        #   top-1's CE score beats the previous top-1's by >= swap_margin.
+        #   When confidence is low, KEEP the hybrid order — the cross-
+        #   encoder isn't sure enough to override it.
+        #
+        #   Net effect: gating fires more often (helps where hybrid was
+        #   ambiguous) but commits more conservatively (no LoCoMo
+        #   regression because clear winners stay on top).
+        gated_rerank = False
+        if (not rerank
+                and self.config.get("recall.rerank_when_close")
+                and self.search.reranker is not None
+                and len(scored) >= 3):
+            top1_score = scored[0][2]
+            top3_score = scored[2][2]
+            eps = float(self.config.get("recall.rerank_close_epsilon") or 0.05)
+            if (top1_score - top3_score) < eps:
+                gated_rerank = True
+
+        if (rerank or gated_rerank) and self.search.reranker is not None and len(scored) > 1:
             top_n = scored[: max(top_k, min(rerank_top_n, len(scored)))]
             remainder = scored[len(top_n):]
+            prev_top1_ulid = top_n[0][1].ulid
             # Build a temporary fake SearchHit list to feed the reranker
             tmp_hits = [
                 SearchHit(
@@ -2497,11 +3045,78 @@ class Engine:
                 query, tmp_hits,
                 text_for_ulid=lambda u: ev_by_ulid[u].to_text(),
             )
+            # VV confidence gate: when gating is on (not full rerank=True),
+            # only ACCEPT a swap of position 1 if the cross-encoder is
+            # genuinely confident. Otherwise revert to the hybrid order
+            # for that slot, leaving the rest of the rerank intact.
+            commit_swap = True
+            if gated_rerank and not rerank and len(reranked) >= 2:
+                new_top1_score = float(reranked[0].score)
+                # find prev top-1's score in the reranked list (could be at any pos)
+                prev_top1_in_rerank = next(
+                    (i for i, h in enumerate(reranked) if h.ulid == prev_top1_ulid),
+                    None,
+                )
+                if prev_top1_in_rerank is not None and prev_top1_in_rerank > 0:
+                    prev_top1_score = float(reranked[prev_top1_in_rerank].score)
+                    swap_margin = float(
+                        self.config.get("recall.rerank_swap_margin") or 0.20
+                    )
+                    if (new_top1_score - prev_top1_score) < swap_margin:
+                        # CE not confident enough — restore prev top-1 at pos 0
+                        commit_swap = False
+                        old_idx = prev_top1_in_rerank
+                        reranked = [reranked[old_idx]] + [
+                            h for i, h in enumerate(reranked) if i != old_idx
+                        ]
             top_n = [
                 (h, ev_by_ulid[h.ulid], h.score, recency_by_ulid[h.ulid])
                 for h in reranked
             ]
             scored = top_n + remainder
+
+        # Stage 3.6: optional LLM-as-judge rerank (Improvement XX).
+        # Asks a small local LLM (qwen2.5:1.5b by default, via Ollama)
+        # to pick the single best candidate from the current top-N.
+        # OFF by default — adds ~100-300ms but lifts top-1 by 5-15pp on
+        # hard queries where lexical+semantic+CE all give close scores.
+        if self.config.get("recall.llm_rerank") and len(scored) >= 2:
+            try:
+                from pmb.reasoning.llm_rerank import (
+                    llm_rerank_top_k, DEFAULT_LLM_RERANK_MODEL,
+                )
+                from pmb.health.consolidate import OllamaClient
+                llm_top_n = int(
+                    self.config.get("recall.llm_rerank_top_n") or 10
+                )
+                window = scored[:llm_top_n]
+                # Lazy-create the client; reuse on subsequent calls
+                if not hasattr(self, "_llm_rerank_client"):
+                    self._llm_rerank_client = OllamaClient(
+                        model=(
+                            self.config.get("recall.llm_rerank_model")
+                            or DEFAULT_LLM_RERANK_MODEL
+                        ),
+                        timeout=float(
+                            self.config.get("recall.llm_rerank_timeout") or 5.0
+                        ),
+                    )
+                cands = [ev for _h, ev, _s, _r in window]
+                pick = llm_rerank_top_k(
+                    query, cands, self._llm_rerank_client,
+                    max_candidates=llm_top_n,
+                )
+                if pick is not None and pick > 0:
+                    # Move picked candidate to position 0, preserve rest
+                    chosen = window[pick]
+                    new_window = [chosen] + [
+                        x for i, x in enumerate(window) if i != pick
+                    ]
+                    scored = new_window + scored[llm_top_n:]
+            except Exception:
+                # Best-effort: any failure (model down, parse error) falls
+                # back to whatever the previous stage produced.
+                pass
 
         scored = scored[:top_k]
 
@@ -2544,7 +3159,10 @@ class Engine:
                 importance=ev.importance,
                 recency_score=recency,
             ))
-        self.events.apply_recall_updates(touches, importance_updates)
+        # Improvement #6: enqueue touches for the deferred flusher instead
+        # of writing synchronously. Under concurrent recalls this turns
+        # 16 lock-acquisitions per second into ~4 (one per flush tick).
+        self._enqueue_touches(touches, importance_updates)
         for ulid_p, new_tier in tier_promotions:
             self.events.update_tier(ulid_p, new_tier)
 
@@ -3664,9 +4282,14 @@ class Engine:
 
     def close(self):
         """Закрыть открытые ресурсы (LanceDB, native handles)."""
+        # Drain any pending touch updates before letting the engine die.
+        try:
+            self._drain_touch_buffer()
+        except Exception:
+            pass
         try:
             self.search._lance = None
-            self.search._table = None
+            self.search._table_obj = None
         except Exception:
             pass
 

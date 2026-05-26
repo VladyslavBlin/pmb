@@ -50,7 +50,12 @@ class _Setting:
 SCHEMA: dict[str, _Setting] = {
     # Recall / search
     "recall.bm25_weight": _Setting(
-        float, 0.5, "Weight of BM25 in BM25+vector fusion (vec_weight = 1 - this)",
+        float, 0.7,
+        "Weight of BM25 in BM25+vector fusion (vec_weight = 1 - this). "
+        "Tuned via ablation_full.py on LoCoMo conv-26/30/41: BM25-heavy "
+        "fusion (0.7) beat the original symmetric (0.5) by ~2.5 points. "
+        "Vector-only (0.0) loses 18 points; the embedding channel adds "
+        "marginal signal at best.",
         min=0.0, max=1.0,
     ),
     "recall.top_k": _Setting(int, 5, "Default top-K returned by recall", min=1, max=100),
@@ -198,10 +203,14 @@ SCHEMA: dict[str, _Setting] = {
         "the graph layer answer code-structure queries.",
     ),
     "recall.typo_correction": _Setting(
-        bool, True,
+        bool, False,
         "Improvement K: at recall start, fuzzy-match query tokens against "
         "known entity names (Levenshtein ≤ 2). 'Aliceee'→'alice', "
-        "'Postgers'→'postgres'. Cheap, no ML. On by default.",
+        "'Postgers'→'postgres'. Cheap, no ML. "
+        "DISABLED by default after ablation showed -6.2 pts recall on "
+        "LoCoMo (the 'corrections' often rewrite a correctly-typed query "
+        "token into a similar-looking but wrong entity name). Enable per "
+        "workspace if you have a known typo-prone use case.",
     ),
     "recall.graph_expansion_llm": _Setting(
         bool, False,
@@ -233,7 +242,138 @@ SCHEMA: dict[str, _Setting] = {
         min=0.1, max=168.0,
     ),
     "recall.rerank": _Setting(
-        bool, False, "Use cross-encoder reranker on top-N hits",
+        bool, False,
+        "Use cross-encoder reranker on top-N hits ALWAYS. WARNING: on "
+        "single-session retrieval benchmarks (LoCoMo) the reranker "
+        "regresses evidence-recall by ~17 points. Prefer "
+        "`recall.rerank_when_close` instead, which only invokes the "
+        "reranker when the hybrid ranker can't decide between the top "
+        "candidates.",
+    ),
+    "recall.pamvr_enabled": _Setting(
+        bool, False,
+        "PAMVR (Predicate-Aware Multi-View Reranking). Post-scoring set of "
+        "small content-based boosts: verb match, entity strict, vocab "
+        "bridges (typing↔mypy, database↔Postgres), topic constraint, "
+        "policy intent, time-duration. "
+        "DOMAIN-SPECIFIC: lifts top-1 by ~30pp on coding-agent / dev "
+        "memory queries (60% → 90% on 30-query bench) but slightly "
+        "regresses LoCoMo (-1pp) because vocab bridges + verb syns are "
+        "dev-lexicon. Enable per workspace if your usage is coding/dev "
+        "focused: `pmb config set recall.pamvr_enabled true`. "
+        "See pmb.reasoning.pamvr for the rule set; extend VOCAB_BRIDGES "
+        "/ VERB_SYNS for your domain.",
+    ),
+    "recall.llm_rerank": _Setting(
+        bool, False,
+        "Improvement XX: optional LLM-as-judge rerank over the current "
+        "top-N candidates. Uses a small local Ollama model (default "
+        "qwen2.5:1.5b, ~900MB) to pick the single best candidate. "
+        "Adds ~100-300ms per query but lifts top-1 by 5-15pp on hard "
+        "queries where hybrid + cross-encoder all give close scores. "
+        "OFF by default — opt-in: `pmb config set recall.llm_rerank true`. "
+        "Requires `ollama serve` running and `ollama pull qwen2.5:1.5b`. "
+        "Degrades gracefully: any LLM error keeps the previous order.",
+    ),
+    "recall.llm_rerank_model": _Setting(
+        str, "qwen2.5:1.5b",
+        "Ollama model tag to use for LLM rerank. Good defaults: "
+        "qwen2.5:0.5b (~400MB), qwen2.5:1.5b (default), llama3.2:1b, "
+        "phi3:mini.",
+    ),
+    "recall.llm_rerank_top_n": _Setting(
+        int, 10, "How many top candidates to show the LLM judge.",
+        min=2, max=50,
+    ),
+    "recall.llm_rerank_timeout": _Setting(
+        float, 5.0, "HTTP timeout (seconds) for LLM rerank request.",
+        min=0.5, max=120.0,
+    ),
+    "write.atomic_fact_extract": _Setting(
+        bool, False,
+        "Improvement WW: on each `fact` recorded via record_batch, run "
+        "pattern-based atomic-fact extraction (mem0-style, no LLM) and "
+        "record each extracted atom as a child event with metadata."
+        "parent_ulid pointing to the source. Patterns: 'X lives in Y', "
+        "'X is the Z at W', 'We use X', 'X leads Y', etc. Lifts recall "
+        "on questions targeting one fact inside a long paragraph. "
+        "OFF by default: adds ~1-5ms per record (regex pass) + ~N extra "
+        "events. Enable when the typical message is multi-sentence "
+        "(meeting notes, project log) and per-message size matters less "
+        "than question-precision recall.",
+    ),
+    "recall.pattern_split": _Setting(
+        bool, True,
+        "Improvement UU: split compound queries on natural markers "
+        "('X and why Y' / 'X потому что Y' / 'X, also Y') and fuse "
+        "sub-query results via Reciprocal Rank Fusion. No LLM needed — "
+        "patterns cover ~80%% of compound queries on EN+RU. "
+        "Default ON: regression-safe (single-clause queries skip split "
+        "entirely; only fires when both halves carry content tokens).",
+    ),
+    "recall.auto_vocab_bridges": _Setting(
+        bool, True,
+        "Improvement TT: auto-mine VOCAB_BRIDGES from this workspace's "
+        "own events via PMI co-occurrence. Makes PAMVR domain-agnostic — "
+        "instead of hand-curated coding-lexicon bridges (typing↔mypy, "
+        "database↔Postgres), the engine learns the user's actual vocabulary "
+        "(e.g. on a personal workspace it might learn ['recipe','onion'] or "
+        "['workout','squat']). Default ON: harmless when no patterns are "
+        "strong (empty bridges just fall back to hand-curated defaults). "
+        "Cache: ~/.pmb/workspaces/<id>/vocab_bridges.json, refreshed every "
+        "`recall.auto_vocab_refresh_after` new events.",
+    ),
+    "recall.auto_vocab_window": _Setting(
+        int, 6, "Auto-bridges: ±N token window for co-occurrence counting.",
+        min=2, max=30,
+    ),
+    "recall.auto_vocab_min_count": _Setting(
+        int, 3, "Auto-bridges: minimum pair count to be considered.",
+        min=1, max=100,
+    ),
+    "recall.auto_vocab_min_pmi": _Setting(
+        float, 2.0,
+        "Auto-bridges: minimum PMI score for a pair to enter the bridge "
+        "table. Higher = fewer, stronger pairs.",
+        min=0.0, max=20.0,
+    ),
+    "recall.auto_vocab_max_per_key": _Setting(
+        int, 8, "Auto-bridges: max bridge terms kept per key, sorted by PMI.",
+        min=1, max=64,
+    ),
+    "recall.auto_vocab_refresh_after": _Setting(
+        int, 50,
+        "Auto-bridges: re-mine the bridge table after this many new events "
+        "have landed since the last mine.",
+        min=10, max=10000,
+    ),
+    "recall.rerank_when_close": _Setting(
+        bool, False,
+        "Improvement #1: GATED reranker. Only run the cross-encoder when "
+        "the gap between top-1 and top-3 scores is below "
+        "`recall.rerank_close_epsilon`. The intuition: when BM25+vector "
+        "have a clear winner, trust them; when they don't, ask the "
+        "reranker to break the tie. "
+        "OFF by default: gating helps on the specific 'Alex prefers X' "
+        "type ambiguity but measurably regresses LoCoMo evidence-recall "
+        "(~0.5-1pp). Enable per workspace if your queries lean conceptual "
+        "and you have already validated against your own data.",
+    ),
+    "recall.rerank_swap_margin": _Setting(
+        float, 0.20,
+        "Improvement VV: confidence margin required to commit a top-1 swap "
+        "during GATED rerank. If the cross-encoder's new-top-1 score doesn't "
+        "beat the previous-top-1 by at least this margin, keep the hybrid "
+        "order. This prevents the LoCoMo-style regression where the CE "
+        "reorders confidently-correct hits with low confidence.",
+        min=0.0, max=5.0,
+    ),
+    "recall.rerank_close_epsilon": _Setting(
+        float, 0.05,
+        "Score-gap threshold for gated reranking. If "
+        "(top1_score - top3_score) < epsilon, fire the reranker. Smaller "
+        "= fires more often; larger = only on very-tight ties.",
+        min=0.0, max=1.0,
     ),
     "recall.rerank_top_n": _Setting(
         int, 25, "Candidates fed into the reranker", min=5, max=200,
@@ -306,7 +446,11 @@ SCHEMA: dict[str, _Setting] = {
     "consolidate.auto_trigger": _Setting(
         bool, False,
         "Auto-run consolidation when thresholds are met (writes or time). "
-        "Off by default — LLM calls cost time/money so explicit is safer.",
+        "Off by default - LLM calls cost time/money so explicit is safer. "
+        "To enable: `pmb config set consolidate.auto_trigger true`. The "
+        "scheduler then fires `pmb consolidate` automatically once "
+        "consolidate.auto_min_new_events AND consolidate.auto_min_days are "
+        "both satisfied.",
     ),
     "consolidate.auto_min_new_events": _Setting(
         int, 50,

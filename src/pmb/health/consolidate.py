@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -495,6 +496,14 @@ def cluster_events(
     Skips events with no embedding in LanceDB. Pinned events (importance≥0.99)
     can still anchor a cluster but won't be archived during consolidation.
     """
+    # If the engine has pending async embeds (e.g. writes happened before
+    # the model finished loading), drain them first - otherwise LanceDB
+    # would be empty for these ulids and we'd return zero clusters.
+    try:
+        _drain_pending_embeds(engine, timeout_s=30.0)
+    except Exception:
+        pass
+
     cutoff = time.time() - since_days * 86400.0
     active = engine.events.list_active(engine.workspace.id, limit=20000)
     candidates = [
@@ -585,6 +594,55 @@ class ConsolidationResult:
 MIN_CONFIDENCE_TO_STORE = 0.6
 
 
+def _drain_pending_embeds(engine, timeout_s: float = 30.0) -> int:
+    """Wait until the engine's async embed queue is empty (or timeout).
+
+    Returns the number of items still pending at exit (0 on success).
+    Safe to call when there's no queue, no model, or no pending work.
+    """
+    queue = getattr(engine, "_embed_queue", None)
+    if not queue:
+        return 0
+    # Trigger model load + worker so it actually drains
+    try:
+        _ = engine.search.model
+    except Exception:
+        pass
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        remaining = len(getattr(engine, "_embed_queue", []) or [])
+        if remaining == 0:
+            return 0
+        time.sleep(0.2)
+    return len(getattr(engine, "_embed_queue", []) or [])
+
+
+def _summary_looks_like_copy(summary: str, source_texts: list[str],
+                             threshold: float = 0.85) -> bool:
+    """Return True if the LLM's summary is essentially a verbatim copy of one
+    source. Cheap token-overlap check — no embeddings needed.
+
+    The intent: when the LLM can't actually generalise, it sometimes just
+    picks the most informative source line. That's not consolidation, that's
+    duplication — we want to skip it.
+    """
+    if not summary:
+        return False
+    s_tokens = set(re.findall(r"[a-z0-9]+", summary.lower()))
+    if not s_tokens:
+        return False
+    for src in source_texts:
+        src_tokens = set(re.findall(r"[a-z0-9]+", src.lower()))
+        if not src_tokens:
+            continue
+        inter = s_tokens & src_tokens
+        # Jaccard-ish: |A∩B| / min(|A|, |B|) catches "summary is contained in source"
+        denom = min(len(s_tokens), len(src_tokens))
+        if denom and (len(inter) / denom) >= threshold:
+            return True
+    return False
+
+
 def run_consolidation(
     engine: "Engine",
     llm: Optional[LLMClient] = None,
@@ -594,6 +652,8 @@ def run_consolidation(
     similarity_threshold: float = 0.5,
     min_cluster_size: int = 3,
     max_clusters: int = 10,
+    min_confidence: float = MIN_CONFIDENCE_TO_STORE,
+    reject_verbatim_copies: bool = True,
     dry_run: bool = False,
 ) -> dict:
     """
@@ -602,10 +662,28 @@ def run_consolidation(
     Pass `llm` directly for tests; otherwise we resolve one via `backend`
     ("auto" picks Anthropic if key set, else Ollama if reachable).
 
-    Returns a summary dict with per-cluster results.
+    Args:
+      min_confidence: float in [0,1]. The LLM must return at least this
+        much confidence in `consolidate=true` for us to actually store the
+        new fact. Lower = more eager consolidation, higher = stricter.
+      reject_verbatim_copies: if True, drop summaries that look like a
+        token-for-token copy of one source event (≥85% token overlap).
+        Prevents the "LLM panic-copy" failure mode.
+
+    Returns a summary dict with per-cluster results AND alias keys for
+    consumers that expect the older naming.
     """
     if llm is None:
         llm = resolve_llm_client(backend=backend, model=model)
+
+    # Sleep / consolidation reads embeddings from LanceDB to cluster events.
+    # If the engine's async embed queue hasn't drained yet (e.g. a freshly-
+    # populated workspace where writes happened before the model loaded),
+    # clustering would see 0 candidates. Force-drain here:
+    try:
+        _drain_pending_embeds(engine, timeout_s=30.0)
+    except Exception:
+        pass
 
     clusters = cluster_events(
         engine,
@@ -616,6 +694,7 @@ def run_consolidation(
     clusters = clusters[:max_clusters]
 
     results: list[ConsolidationResult] = []
+    n_rejected_copies = 0
     for cluster in clusters:
         # Hydrate the cluster's events
         rows = engine.events.get_many(cluster.member_ulids, workspace_id=engine.workspace.id)
@@ -637,14 +716,31 @@ def run_consolidation(
             ))
             continue
 
+        # Filter LLM output: must agree to consolidate, beat the confidence
+        # bar, AND not be a verbatim copy of one source line.
+        is_copy = (reject_verbatim_copies
+                   and _summary_looks_like_copy(llm_out.get("summary") or "", texts))
+        if is_copy:
+            n_rejected_copies += 1
+
+        consolidated = (
+            llm_out.get("consolidate", False)
+            and llm_out.get("confidence", 0.0) >= min_confidence
+            and not is_copy
+        )
+
+        reasoning = llm_out.get("reasoning", "")
+        if is_copy:
+            reasoning = (reasoning + " [REJECTED: summary too close to a single source event]").strip()
+
         result = ConsolidationResult(
             cluster_anchor=cluster.anchor_ulid,
             cluster_size=len(events),
             avg_similarity=cluster.avg_similarity,
-            consolidated=llm_out["consolidate"] and llm_out["confidence"] >= MIN_CONFIDENCE_TO_STORE,
-            summary=llm_out["summary"],
-            confidence=llm_out["confidence"],
-            reasoning=llm_out["reasoning"],
+            consolidated=consolidated,
+            summary=llm_out.get("summary", ""),
+            confidence=llm_out.get("confidence", 0.0),
+            reasoning=reasoning,
         )
 
         if result.consolidated and result.summary and not dry_run:
@@ -672,11 +768,24 @@ def run_consolidation(
 
     n_consolidated = sum(1 for r in results if r.consolidated)
     n_archived = sum(len(r.archived_source_ulids) for r in results)
+
+    # Return primary keys + alias keys so older / external callers keep
+    # working. The aliases were the names exposed in earlier tests; adding
+    # them without removing the canonical ones is a pure-positive change.
     return {
+        # canonical
         "n_clusters_found": len(clusters),
         "n_clusters_processed": len(results),
         "n_consolidated": n_consolidated,
         "n_archived": n_archived,
+        "n_rejected_verbatim_copies": n_rejected_copies,
         "dry_run": dry_run,
         "results": [r.to_dict() for r in results],
+        # aliases (intuitive names for consumers / dashboards)
+        "clusters_seen": len(clusters),
+        "clusters_consolidated": n_consolidated,
+        "new_facts_created": sum(1 for r in results if r.new_ulid),
+        "sources_archived": n_archived,
+        "clusters": [r.to_dict() for r in results],
+        "min_confidence_used": min_confidence,
     }

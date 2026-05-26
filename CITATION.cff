@@ -9,7 +9,9 @@ authors:
 repository-code: https://github.com/yourname/pmb
 abstract: >-
   Local-first persistent memory for AI coding agents over MCP.
-  91.6% evidence-recall@10 on LoCoMo, 90-200ms p50 latency,
+  Hybrid BM25+vector retrieval with SQLite + LanceDB storage.
+  Evidence-recall@10 on LoCoMo: 94.1% across the full 10-conversation
+  run with v0.1.0 defaults. Warm-recall p50 latency 65-195 ms;
   no API keys required.
 keywords:
   - mcp

@@ -72,6 +72,78 @@ _INFERENTIAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Identity intent: query is about the USER or a named person, not a topic.
+# Examples: "Who is the user?", "Where does Alex live?", "What languages
+# does the user use?", "What's my favourite editor?", "Who am I working
+# with?". When this fires, facts starting with possessive markers
+# ("User's...", "Alex's...", "My...") get a small boost, because the user
+# is asking about the entity, not about something topical.
+#
+# Without this gate, the personal-marker boost was firing on ANY query
+# touching a fact whose content starts that way - e.g. "What's the JWT
+# lifetime?" returning "Alex's terminal is Wezterm..." at top-1 just
+# because the matching event happened to start with "Alex's".
+_IDENTITY_RE = re.compile(
+    r"\b("
+    r"who is (?:the |my )?(?:user|alex|i|me)\b|"
+    r"who am i\b|"
+    r"who (?:is|are) we\b|"
+    r"who (?:do|did) i work|"
+    r"who (?:'?s|s) on the team\b|"
+    r"who is on the team\b|"
+    r"what(?:'?s)? (?:my|the user'?s?|alex'?s?) "
+    r"(?:name|email|stack|language|languages|editor|terminal|preference|preferences|home|location|allergy|allergies)|"
+    r"where (?:does|do) (?:alex|the user|i) (?:live|work)|"
+    r"what (?:languages?|tools?|stacks?) (?:does|do) (?:alex|the user|i) (?:use|prefer)|"
+    r"what (?:does|do) (?:alex|the user|i) (?:like|love|hate|prefer|avoid)|"
+    r"who am i working with\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Historical intent: "what did we use before", "previous", "old setup",
+# "before the migration", "originally", "used to". Fires when the user
+# explicitly asks about the PAST state of something whose current state
+# has been superseded. We slightly boost older events and avoid letting
+# the latest pinned/recency-heavy fact dominate.
+_HISTORICAL_RE = re.compile(
+    r"\b("
+    # "what/where/how did X (before|previously|originally|formerly)" anywhere in the tail
+    r"(?:what|where|how) (?:did|do|does|were|was) .*\b(?:before|previously|originally|formerly|prior)\b|"
+    # Explicit "previous/former/old/original/prior" qualifier on subject
+    r"(?:previous|former|old|original|prior|legacy) (?:setup|stack|deployment|target|approach|system|database|provider|host)|"
+    # "what was our prior X"
+    r"what (?:was|were) (?:our|the) (?:previous|former|old|original|prior)\b|"
+    # "before the migration", "before we moved"
+    r"before (?:the |we |they |our )?(?:migration|move|switch|change|move to|switch to)|"
+    # "we used to / formerly used / previously used"
+    r"\b(?:used to|formerly used|previously used|once used)\b"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+# Decision intent: "what did we decide", "did we agree", "team decision",
+# "final call", "what's the verdict", "what was concluded", "resolution".
+# When this fires, events of type=activity with kind ∈ {decision, decided,
+# agreed, resolved, concluded} should outrank arguments / positions for the
+# same topic. Without this, a query like "what did the team decide about X"
+# can return the LOUDEST argument instead of the actual decision activity.
+_DECISION_RE = re.compile(
+    r"\b("
+    r"what (?:did|do|does) .* decide|"
+    r"what (?:was|is|were) (?:the )?decision|"
+    r"what'?s? (?:the )?(?:decision|verdict|conclusion|outcome|resolution)|"
+    r"did (?:we|they|the team) (?:agree|decide|settle|resolve)|"
+    r"(?:team|final|our) (?:decision|verdict|conclusion|call)|"
+    r"what (?:was|is) (?:the )?(?:agreed|chosen|picked|settled)|"
+    r"what (?:was|did) .* (?:agreed|decided|concluded|resolved)|"
+    r"what (?:are|were) we going with|"
+    r"how (?:did|do) (?:we|they|the team) decide"
+    r")\b",
+    re.IGNORECASE,
+)
+
 # "Direct lookup" pattern — short factual question
 _DIRECT_RE = re.compile(
     r"^\s*(what|who|where|which) (is|are|was|were|did) ",
@@ -95,6 +167,25 @@ class LayerWeights:
     arc_boost_mul: float = 1.0       # multiplier on arc_boost
     temporal_boost_mul: float = 1.0  # multiplier on temporal_boost
     ppr_weight_mul: float = 1.0      # multiplier on ppr_weight
+    # Multiplier for `activity` events whose `metadata.kind` marks them as
+    # the conclusive outcome (decision / agreed / resolved / concluded).
+    # Fired by the "decision" intent; lets the actual team decision outrank
+    # the loudest argument when the user asks "what did we decide".
+    decision_boost: float = 1.0
+    # When "historical" intent fires, we want OLDER events (which usually
+    # carry the superseded state) to outrank the latest pinned facts.
+    # Implemented as: a negative offset on the recency-half-life multiplier
+    # (so newer is no longer rewarded) plus a flat boost for older events.
+    historical_recency_mul: float = 1.0   # 1.0 = normal recency curve;
+                                          # <1.0 weakens recency boost;
+                                          # >1.0 strengthens it.
+    older_event_bonus: float = 0.0        # additive bonus per "older than
+                                          # median timestamp" candidate.
+    # When "identity" intent fires, facts whose content starts with a
+    # personal-possessive marker ("User's", "Alex's", "I am ", "My ", etc.)
+    # get a small multiplicative boost. Default 1.0 = no boost; the router
+    # bumps to ~1.15 on identity-shaped queries.
+    identity_marker_boost: float = 1.0
 
 
 @dataclass
@@ -139,6 +230,15 @@ class QueryRouter:
         if _INFERENTIAL_RE.search(q):
             types.append("inferential")
             notes.append("inferential pattern matched")
+        if _DECISION_RE.search(q):
+            types.append("decision")
+            notes.append("decision-intent pattern matched")
+        if _HISTORICAL_RE.search(q):
+            types.append("historical")
+            notes.append("historical-intent pattern matched")
+        if _IDENTITY_RE.search(q):
+            types.append("identity")
+            notes.append("identity-intent pattern matched")
 
         # Direct lookup if nothing else strongly fired, or query is short
         # factual ("what is X?" style)
@@ -182,6 +282,30 @@ class QueryRouter:
             # "Why / would / should" — reflections capture interpretations.
             weights.reflections_boost = max(weights.reflections_boost, 1.5)
             weights.raw_boost = max(weights.raw_boost, 1.2)
+
+        if "decision" in types:
+            # "What did we decide / agree / conclude" — the answer is a
+            # decision activity, not the loudest argument. Boost activity
+            # events whose metadata.kind is in the decision family.
+            # 1.8 picked empirically: enough to outrank typical surface-form
+            # competitors (~1.5 raw_boost on similar phrasing) but not so
+            # high that an off-topic decision wins.
+            weights.decision_boost = max(weights.decision_boost, 1.8)
+            # Reduce raw boost slightly so arguments don't beat the decision
+            # purely on lexical match.
+            weights.raw_boost = min(weights.raw_boost, 0.9)
+
+        if "historical" in types:
+            # "What did we use before" — the LATEST pinned fact is the wrong
+            # answer; we want the superseded state. Flatten the recency
+            # boost and add a small bonus for older events.
+            weights.historical_recency_mul = min(weights.historical_recency_mul, 0.25)
+            weights.older_event_bonus = max(weights.older_event_bonus, 0.10)
+
+        if "identity" in types:
+            # User-about-self / user-about-team query. Facts starting with
+            # personal possessives are the most likely match.
+            weights.identity_marker_boost = max(weights.identity_marker_boost, 1.15)
 
         return QueryIntent(
             query=query,

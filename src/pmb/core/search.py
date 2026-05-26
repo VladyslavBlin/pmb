@@ -205,15 +205,38 @@ class HybridSearch:
         self._model = None
         self._reranker = None
 
-        # LanceDB connection (lazy import — torch/lancedb dominate cold start)
+        # LanceDB is lazy too: `import lancedb` alone takes ~22 s on Windows
+        # (pulls in pyarrow + torch transitively). We defer the import and the
+        # `connect()` call to the first read/write operation that needs vectors.
+        # CLI commands like `pmb stats`, `pmb list`, `pmb pin`, `pmb forget`,
+        # and `pmb config` never touch vectors, so they construct an Engine
+        # in <500 ms instead of 14 s.
         self.vector_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lance = _lancedb().connect(str(self.vector_path))
-        self._table = self._open_or_create_table()
+        self._lance = None
+        self._table_obj = None
 
-        # BM25 (in-memory)
+        # BM25 (in-memory). Built lazily: the first call to `search()` or
+        # `add()` triggers `reload_bm25()` so we don't pay the LanceDB import
+        # cost during Engine() construction.
         self._bm25: Optional[BM25Okapi] = None
         self._bm25_ulids: list[str] = []
         self._bm25_tokens: list[list[str]] = []
+        self._bm25_reloaded = False
+
+    @property
+    def _table(self):
+        """Lazy LanceDB table accessor. First call triggers `import lancedb`
+        (~22 s) + opens/creates the on-disk table (~100 ms). Subsequent
+        calls are constant-time attribute reads.
+        """
+        if self._table_obj is None:
+            self._lance = _lancedb().connect(str(self.vector_path))
+            self._table_obj = self._open_or_create_table()
+        return self._table_obj
+
+    def is_vector_index_loaded(self) -> bool:
+        """True if LanceDB has been opened and table is ready."""
+        return self._table_obj is not None
 
     def _open_or_create_table(self):
         # Newer lancedb exposes list_tables() returning a response object with
@@ -314,6 +337,11 @@ class HybridSearch:
 
     def add(self, ulid: str, text: str) -> None:
         """Добавить один документ. Не пересобирает BM25 — вызови build() после batch."""
+        # Make sure BM25 in-memory state is loaded before we append to it,
+        # otherwise the first write after a process start would silently
+        # drop pre-existing events.
+        if not self._bm25_reloaded:
+            self.reload_bm25()
         emb = self.embed(text)
         self._table.add([{
             "ulid": ulid,
@@ -329,6 +357,8 @@ class HybridSearch:
     def add_batch(self, items: list[tuple[str, str]]) -> None:
         if not items:
             return
+        if not self._bm25_reloaded:
+            self.reload_bm25()
         texts = [t for _, t in items]
         embs = self.embed_batch(texts)
         rows = [
@@ -439,7 +469,11 @@ class HybridSearch:
         """
         Restore BM25 state. Tries the on-disk pickle first (cheap), falls back
         to a full LanceDB scan if the cache is missing or corrupt.
+
+        Idempotent: subsequent calls after the first successful one are no-ops,
+        so search() / add() can call this defensively.
         """
+        self._bm25_reloaded = True
         if self._load_bm25_cache():
             return
         try:
@@ -485,6 +519,11 @@ class HybridSearch:
         blocking 30-120s on model load. Result quality is lower without
         vector similarity but the call doesn't timeout.
         """
+        # Lazy BM25 reload - first search triggers it (cheap if pickle exists,
+        # otherwise scans LanceDB once). Subsequent searches skip via the flag.
+        if not self._bm25_reloaded:
+            self.reload_bm25()
+
         if self.size() == 0:
             return []
 
