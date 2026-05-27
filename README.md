@@ -1,15 +1,16 @@
 <div align="center">
 
-<img src="docs/assets/logo.png" width="180" alt="PMB logo">
+<img src="https://raw.githubusercontent.com/oleksiijko/pmb/main/docs/assets/logo.png" width="180" alt="PMB logo">
 
 # PMB · Personal Memory Brain
 
 ### Local-first persistent memory for AI agents - Claude Code, Cursor, Codex.
 ### 94.5% LoCoMo recall@10 · 70ms p50 · multilingual · Apache 2.0 · zero API keys.
 
-[![PyPI](https://img.shields.io/pypi/v/pmb-ai.svg?logo=pypi&label=pypi)](https://pypi.org/project/pmb-ai/)
+[![PyPI version](https://img.shields.io/pypi/v/pmb-ai.svg?logo=pypi&logoColor=white&label=pypi&color=blue)](https://pypi.org/project/pmb-ai/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/pmb-ai.svg?logo=pypi&logoColor=white&label=downloads)](https://pypi.org/project/pmb-ai/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pmb-ai.svg?logo=python&logoColor=white)](https://pypi.org/project/pmb-ai/)
 [![CI](https://github.com/oleksiijko/pmb/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/oleksiijko/pmb/actions/workflows/ci.yml)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
 [![LoCoMo Recall](https://img.shields.io/badge/LoCoMo%20recall%4010-94.5%25-success.svg)](#-benchmarks)
@@ -28,16 +29,16 @@
 
 <div align="center">
 
-<img src="docs/assets/01_connect.png" width="780" alt="pmb connect - wire memory into Claude Code & Codex"><br>
+<img src="https://raw.githubusercontent.com/oleksiijko/pmb/main/docs/assets/01_connect.png" width="780" alt="pmb connect - wire memory into Claude Code & Codex"><br>
 <sub>One command. Both Claude Code and Codex now share the same workspace.</sub>
 
-<img src="docs/assets/05_locomo.png" width="780" alt="LoCoMo benchmark: 94.5% recall@10"><br>
+<img src="https://raw.githubusercontent.com/oleksiijko/pmb/main/docs/assets/05_locomo.png" width="780" alt="LoCoMo benchmark: 94.5% recall@10"><br>
 <sub>Reproducible LoCoMo: <code>python scripts/benchmarks/benchmark_locomo.py --n-conversations 10</code> → 94.5%.</sub>
 
-<img src="docs/assets/06_multilingual.png" width="780" alt="Multilingual atomic extraction across English, Spanish, German"><br>
+<img src="https://raw.githubusercontent.com/oleksiijko/pmb/main/docs/assets/06_multilingual.png" width="780" alt="Multilingual atomic extraction across English, Spanish, German"><br>
 <sub>25+ regex patterns + multilingual embedder cover 50+ languages out of the box.</sub>
 
-<img src="docs/assets/07_mega.png" width="780" alt="Mega stress test - 900 queries, multi-language, top-10 = 99.2%"><br>
+<img src="https://raw.githubusercontent.com/oleksiijko/pmb/main/docs/assets/07_mega.png" width="780" alt="Mega stress test - 900 queries, multi-language, top-10 = 99.2%"><br>
 <sub>900-query multi-language stress test including cross-lingual pairs. <code>top-10 = 99.2%, p50 = 70ms</code>.</sub>
 
 [More screenshots: `pmb stats`, `pmb recall`, `pmb doctor` ↓](#-screenshots--cli-reference)
@@ -329,9 +330,9 @@ Multilingual fit  │ warn  │ Workspace has 81% non-Latin chars but uses
 
 <div align="center">
 
-<img src="docs/assets/02_stats.png" width="700" alt="pmb stats - workspace overview"><br><br>
-<img src="docs/assets/03_recall.png" width="700" alt="pmb recall - hybrid search from the shell"><br><br>
-<img src="docs/assets/04_doctor.png" width="700" alt="pmb doctor - health check with multilingual warning">
+<img src="https://raw.githubusercontent.com/oleksiijko/pmb/main/docs/assets/02_stats.png" width="700" alt="pmb stats - workspace overview"><br><br>
+<img src="https://raw.githubusercontent.com/oleksiijko/pmb/main/docs/assets/03_recall.png" width="700" alt="pmb recall - hybrid search from the shell"><br><br>
+<img src="https://raw.githubusercontent.com/oleksiijko/pmb/main/docs/assets/04_doctor.png" width="700" alt="pmb doctor - health check with multilingual warning">
 
 </div>
 
@@ -348,13 +349,13 @@ pmb dashboard
 
 <div align="center">
 
-<img src="docs/assets/08_dashboard.png" width="900" alt="PMB Dashboard - overview"><br>
+<img src="https://raw.githubusercontent.com/oleksiijko/pmb/main/docs/assets/08_dashboard.png" width="900" alt="PMB Dashboard - overview"><br>
 <sub>Overview tab: total events, active / pinned / archived counts, entity graph stats.</sub><br><br>
 
-<img src="docs/assets/09_dashboard_events.png" width="900" alt="PMB Dashboard - Events tab"><br>
+<img src="https://raw.githubusercontent.com/oleksiijko/pmb/main/docs/assets/09_dashboard_events.png" width="900" alt="PMB Dashboard - Events tab"><br>
 <sub>Events tab: timeline of recorded facts, activities, decisions. Each row is sortable.</sub><br><br>
 
-<img src="docs/assets/10_dashboard_recall.png" width="900" alt="PMB Dashboard - Recall Debug tab"><br>
+<img src="https://raw.githubusercontent.com/oleksiijko/pmb/main/docs/assets/10_dashboard_recall.png" width="900" alt="PMB Dashboard - Recall Debug tab"><br>
 <sub>Recall Debug tab: test any query against the workspace, see the ranked
 results with PAMVR score breakdown - useful for tuning <code>recall.*</code> knobs.</sub>
 
