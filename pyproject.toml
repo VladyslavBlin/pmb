@@ -1,7 +1,7 @@
 [project]
-name = "pmb"
+name = "pmb-ai"
 version = "0.1.0"
-description = "Personal Memory Brain - local-first persistent memory for AI coding agents (MCP, beats mem0/Letta/Zep on retrieval)"
+description = "PMB (Personal Memory Brain) - local-first persistent memory for AI coding agents (MCP, beats mem0/Letta/Zep on retrieval)"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
@@ -69,11 +69,11 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourname/pmb"
-Documentation = "https://github.com/yourname/pmb#readme"
-Repository = "https://github.com/yourname/pmb"
-Issues = "https://github.com/yourname/pmb/issues"
-Changelog = "https://github.com/yourname/pmb/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/oleksiijko/pmb"
+Documentation = "https://github.com/oleksiijko/pmb#readme"
+Repository = "https://github.com/oleksiijko/pmb"
+Issues = "https://github.com/oleksiijko/pmb/issues"
+Changelog = "https://github.com/oleksiijko/pmb/blob/main/CHANGELOG.md"
 
 [project.scripts]
 pmb = "pmb.cli:app"
