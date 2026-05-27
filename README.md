@@ -7,8 +7,8 @@
 ### Local-first persistent memory for AI agents - Claude Code, Cursor, Codex.
 ### 94.5% LoCoMo recall@10 · 70ms p50 · multilingual · Apache 2.0 · zero API keys.
 
-[![PyPI](https://img.shields.io/pypi/v/pmb.svg?logo=pypi&label=pypi)](https://pypi.org/project/pmb/)
-[![CI](https://github.com/yourname/pmb/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/yourname/pmb/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/pmb-ai.svg?logo=pypi&label=pypi)](https://pypi.org/project/pmb-ai/)
+[![CI](https://github.com/oleksiijko/pmb/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/oleksiijko/pmb/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
