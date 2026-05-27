@@ -87,14 +87,14 @@ machine restarts. Nothing leaves your disk.
 
 > **TL;DR**
 > ```bash
-> pip install pmb                       # once on PyPI; see below for editable install
+> pip install pmb-ai                    # CLI command remains `pmb`
 > pmb connect codex                     # or claude-code / cursor
 > # restart your agent and say "remember - I prefer Postgres"
 > ```
 >
-> Until the first PyPI release, install from source:
+> Or install from source for the latest unreleased changes:
 > ```bash
-> git clone <repo> pmb && cd pmb
+> git clone https://github.com/oleksiijko/pmb.git && cd pmb
 > python -m venv .venv && source .venv/bin/activate
 > pip install -e .
 > ```
