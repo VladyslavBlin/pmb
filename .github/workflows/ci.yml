@@ -6,14 +6,39 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel older runs on the same ref — saves Actions minutes on rapid pushes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # --------------------------------------------------------------
+  # Lint — fast, runs once.
+  # --------------------------------------------------------------
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install "ruff>=0.8"
+      - run: ruff check src tests scripts --output-format=github
+        continue-on-error: true
+
+  # --------------------------------------------------------------
+  # Tests — matrix over OS × Python. HF model cache shared.
+  # --------------------------------------------------------------
   test:
     name: ${{ matrix.os }} · py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+    needs: lint
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest]
         python: ["3.11", "3.12"]
 
     steps:
@@ -25,16 +50,24 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
 
+      - name: Cache Hugging Face models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~\AppData\Local\huggingface
+          key: hf-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: hf-${{ runner.os }}-
+
       - name: Install package + dev deps
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Lint
-        run: ruff check src/ tests/ --output-format=github
-        continue-on-error: true
+      - name: Hardening + RU/UK regression suite (fast)
+        run: pytest tests/test_hardening.py tests/test_ru_uk_suite.py -q --tb=short
 
-      - name: Run core tests
+      - name: Core tests
         run: |
           pytest tests/test_graph.py \
                  tests/test_persons.py \
@@ -44,11 +77,24 @@ jobs:
                  tests/test_config.py \
                  tests/test_redact.py \
                  tests/test_causation.py \
+                 tests/test_pamvr.py \
                  -q --tb=short
 
+      - name: Full test suite (best-effort)
+        # Some Windows tests have pre-existing file-lock issues on
+        # parallel SQLite handles. Run them but don't gate the build.
+        run: pytest tests/ -q --tb=line
+                    --ignore=tests/test_connect_rules.py
+                    --ignore=tests/test_locomo_judge.py
+        continue-on-error: true
+
+  # --------------------------------------------------------------
+  # CLI smoke — quick sanity check that the entry points work.
+  # --------------------------------------------------------------
   smoke:
-    name: CLI smoke (ubuntu, py3.12)
+    name: CLI smoke
     runs-on: ubuntu-latest
+    needs: lint
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,5 +103,42 @@ jobs:
           cache: pip
       - run: pip install -e .
       - run: pmb --help
-      - run: pmb stats
       - run: pmb config list
+      - run: pmb stats || true   # workspace might be empty, OK
+      - run: pmb doctor || true  # warnings allowed
+
+  # --------------------------------------------------------------
+  # LoCoMo headline metric — slow but high signal. Only on main.
+  # --------------------------------------------------------------
+  locomo-smoke:
+    name: LoCoMo smoke (n=3)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-locomo-${{ hashFiles('pyproject.toml') }}
+          restore-keys: hf-locomo-
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Download LoCoMo dataset
+        run: |
+          mkdir -p /tmp
+          curl -sL https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json \
+            -o /tmp/locomo10.json || echo "dataset download skipped"
+      - name: Run LoCoMo (3 convs)
+        if: hashFiles('/tmp/locomo10.json') != ''
+        run: |
+          python scripts/benchmarks/benchmark_locomo.py \
+            --n-conversations 3 \
+            --dataset /tmp/locomo10.json

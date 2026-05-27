@@ -1,0 +1,92 @@
+name: Publish to PyPI
+
+# Triggers:
+#  - A pushed tag like v0.1.0 → build + publish to PyPI
+#  - Manual run from Actions UI → build + publish to TestPyPI
+#
+# Setup before this works:
+#  1. Go to https://pypi.org/manage/account/publishing/ and add a
+#     "Trusted Publisher" for this repo (owner/pmb, workflow publish.yml).
+#     No API tokens needed — OIDC handles auth.
+#  2. Optionally do the same on https://test.pypi.org/ for the manual job.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        default: "testpypi"
+        type: choice
+        options: [pypi, testpypi]
+
+jobs:
+  # ----------------------------------------------------------------
+  # Build sdist + wheel once, reuse in both publish jobs.
+  # ----------------------------------------------------------------
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+      - name: Build
+        run: python -m build
+      - name: Check
+        run: twine check dist/*
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # ----------------------------------------------------------------
+  # Publish to PyPI on tag push (using OIDC Trusted Publisher).
+  # ----------------------------------------------------------------
+  pypi:
+    name: Publish · PyPI
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pmb
+    permissions:
+      id-token: write   # required for trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # ----------------------------------------------------------------
+  # Publish to TestPyPI on manual run.
+  # ----------------------------------------------------------------
+  testpypi:
+    name: Publish · TestPyPI
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/pmb
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

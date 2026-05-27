@@ -35,7 +35,11 @@ from pmb.signals.session import SessionTracker
 from pmb.signals.decay import boost_on_recall
 from pmb.reasoning.pamvr import (
     apply_pamvr as _pamvr_apply,
+    prepare_query_features as _pamvr_prepare,
     VOCAB_BRIDGES as _PAMVR_DEFAULT_BRIDGES,
+)
+from pmb.reasoning.user_names import (
+    mine_user_names_from_db as _mine_user_names,
 )
 from pmb.reasoning.vocab_miner import (
     mine_workspace as _mine_workspace_bridges,
@@ -404,6 +408,11 @@ class Engine:
         self._embed_worker_started = False
         self._embed_queue_lock = None  # lazy threading.Lock
 
+        # Hardening H3: durable embed queue (SQLite-backed) for crash-
+        # safety. Pending embeds survive process restart. Inits lazily
+        # so the read-only CLI commands don't pay the cost.
+        self._durable_embed_queue = None  # set by _ensure_durable_queue()
+
         # Improvement CC: serialize record_batch entries — when multiple
         # async batches run concurrently, they race on self._batch_defer
         # and self._batch_pending. A Lock makes batches process one at a
@@ -589,8 +598,13 @@ class Engine:
             tier=default_tier_for_event_type("qa"),
         )
         ev = self.events.append(ev)
-        # Index в hybrid search
-        self.search.add(ev.ulid, ev.to_text())
+        # Index в hybrid search. Synchronous: the Python API contract is
+        # "write returns when data is searchable". Use `_embed_or_defer`
+        # only when we're inside `record_batch` (it sets _batch_defer).
+        if getattr(self, "_batch_defer", False):
+            self._embed_or_defer(ev.ulid, ev.to_text())
+        else:
+            self.search.add(ev.ulid, ev.to_text())
         # Index в graph
         self._index_event_in_graph(ev, full_text=f"{clean_query}\n{clean_response}")
         try:
@@ -687,6 +701,179 @@ class Engine:
 
         self.recall_cache.bump_generation()
         return ev.ulid
+
+    # -----------------------------------------------------------------
+    # P0-2: Keyed-upsert (fact supersession).
+    # -----------------------------------------------------------------
+
+    def record_keyed_fact(
+        self,
+        subject: str,
+        attribute: str,
+        value: str,
+        importance: float = 0.8,
+        metadata: Optional[dict] = None,
+    ) -> dict:
+        """Upsert a personal-attribute fact, archiving any prior fact with
+        the same (subject, attribute) key.
+
+        This is the missing piece for personal-assistant memory:
+        "user lives in Kyiv" → "user lives in Warsaw" should not leave
+        both active in recall. The old fact is archived with metadata
+        `superseded_by=<new_ulid>` so history is preserved but only the
+        current value surfaces by default.
+
+        The key is `subject::attribute` (lowercased), stored as
+        `metadata.keyed_fact_key`. Recall filters archived events out
+        normally, so old values disappear from results without any
+        extra work in the recall pipeline.
+
+        Returns:
+            {
+                "new_ulid": str,
+                "superseded_ulids": list[str],   # archived prior versions
+                "key": str,
+            }
+        """
+        if not subject or not attribute or not value:
+            raise ValueError("subject, attribute, value all required")
+        subject_norm = subject.strip().lower()
+        attribute_norm = attribute.strip().lower()
+        key = f"{subject_norm}::{attribute_norm}"
+
+        # 1. Find any prior facts with the same key (active only)
+        prior_ulids: list[str] = []
+        try:
+            import sqlite3 as _sql
+            with _sql.connect(str(self.workspace.db_path)) as conn:
+                conn.row_factory = _sql.Row
+                rows = conn.execute(
+                    "SELECT ulid, metadata_json FROM events "
+                    "WHERE workspace_id = ? AND archived_at IS NULL "
+                    "AND event_type = 'fact' "
+                    "AND metadata_json LIKE ?",
+                    (self.workspace.id, f'%"keyed_fact_key": "{key}"%'),
+                ).fetchall()
+            for r in rows:
+                prior_ulids.append(r["ulid"])
+        except Exception:
+            pass
+
+        # 2. Write the new fact with the key + supersedes pointer
+        meta = dict(metadata or {})
+        meta["keyed_fact_key"] = key
+        meta["keyed_fact_subject"] = subject
+        meta["keyed_fact_attribute"] = attribute
+        meta["keyed_fact_value"] = value
+        if prior_ulids:
+            meta["supersedes"] = prior_ulids
+        # Human-readable content for embedder/BM25
+        content = f"{subject} {attribute}: {value}"
+        new_ulid = self.record_fact(
+            content, importance=importance, metadata=meta,
+        )
+
+        # 3. Archive priors — they stay in SQLite (queryable as history)
+        # but `archived_at IS NULL` filter removes them from recall.
+        for old_ulid in prior_ulids:
+            try:
+                self.events.archive(old_ulid)
+                # Tag with the new pointer so callers can trace history.
+                import sqlite3 as _sql, json as _json
+                with _sql.connect(str(self.workspace.db_path)) as conn:
+                    row = conn.execute(
+                        "SELECT metadata_json FROM events WHERE ulid = ?",
+                        (old_ulid,),
+                    ).fetchone()
+                    old_meta = _json.loads(row[0] or "{}") if row else {}
+                    old_meta["superseded_by"] = new_ulid
+                    conn.execute(
+                        "UPDATE events SET metadata_json = ? WHERE ulid = ?",
+                        (_json.dumps(old_meta), old_ulid),
+                    )
+            except Exception:
+                continue
+
+        self.recall_cache.bump_generation()
+        return {
+            "new_ulid": new_ulid,
+            "superseded_ulids": prior_ulids,
+            "key": key,
+        }
+
+    # -----------------------------------------------------------------
+    # P2: typed memory shortcuts.
+    # ALL of these are thin wrappers over `record_fact` / `record_event`
+    # with a clear, indexable `event_type`. Recall doesn't change — the
+    # type just makes it easier for callers to filter / diagnose.
+    # -----------------------------------------------------------------
+
+    def record_preference(
+        self,
+        preference: str,
+        importance: float = 0.7,
+        metadata: Optional[dict] = None,
+    ) -> str:
+        """User preference. Event_type='preference', tier='semantic'.
+        Examples: "I prefer dark mode", "Я люблю спокойные игры".
+        """
+        meta = dict(metadata or {})
+        meta["memory_type"] = "preference"
+        return self.record_event(
+            content=preference,
+            event_type="preference",
+            importance=importance,
+            metadata=meta,
+        )
+
+    def record_summary(
+        self,
+        summary: str,
+        importance: float = 0.5,
+        metadata: Optional[dict] = None,
+    ) -> str:
+        """Conversation summary / digest. Event_type='summary', tier='episodic'.
+        Marked so retrieval can prefer original facts over rephrased summaries.
+        """
+        meta = dict(metadata or {})
+        meta["memory_type"] = "summary"
+        return self.record_event(
+            content=summary,
+            event_type="summary",
+            importance=importance,
+            metadata=meta,
+        )
+
+    def get_keyed_fact_history(self, subject: str, attribute: str) -> list[dict]:
+        """Return current + all prior values for a keyed fact, newest first.
+        Useful for "what did I say about X before?" introspection.
+        """
+        key = f"{subject.strip().lower()}::{attribute.strip().lower()}"
+        try:
+            import sqlite3 as _sql, json as _json
+            with _sql.connect(str(self.workspace.db_path)) as conn:
+                conn.row_factory = _sql.Row
+                rows = conn.execute(
+                    "SELECT ulid, content, metadata_json, timestamp, "
+                    "archived_at FROM events "
+                    "WHERE workspace_id = ? AND event_type = 'fact' "
+                    "AND metadata_json LIKE ? "
+                    "ORDER BY timestamp DESC",
+                    (self.workspace.id, f'%"keyed_fact_key": "{key}"%'),
+                ).fetchall()
+            out = []
+            for r in rows:
+                meta = _json.loads(r["metadata_json"] or "{}")
+                out.append({
+                    "ulid": r["ulid"],
+                    "value": meta.get("keyed_fact_value"),
+                    "content": r["content"],
+                    "timestamp": r["timestamp"],
+                    "is_current": r["archived_at"] is None,
+                })
+            return out
+        except Exception:
+            return []
 
     # -----------------------------------------------------------------
     # Improvement U: dedup helpers (called from record_fact and others)
@@ -933,6 +1120,156 @@ class Engine:
     # Improvement W: deferred embedding (writes don't block on model load)
     # -----------------------------------------------------------------
 
+    def warmup(self, with_first_query: bool = True) -> dict:
+        """P1-1: Eagerly load model + BM25 + LanceDB so the first real
+        recall is fast. Without this the first query pays the entire
+        ~1-2s cold-start cost (model load + index open). Useful for:
+
+        - MCP server boot
+        - Voice assistant init (latency-sensitive)
+        - CLI scripts that do one recall
+
+        Returns timing breakdown for diagnostics.
+
+        with_first_query=True also runs one no-op recall to warm the
+        vector index handle and any per-query lazy state.
+        """
+        import time as _t
+        t0 = _t.time()
+
+        # 1. Load embedding model
+        t_model_start = _t.time()
+        try:
+            _ = self.search.model
+        except Exception:
+            pass
+        t_model = _t.time() - t_model_start
+
+        # 2. Build BM25 from any persisted index
+        t_bm25_start = _t.time()
+        try:
+            self.search.reload_bm25()
+        except Exception:
+            pass
+        t_bm25 = _t.time() - t_bm25_start
+
+        # 3. Open LanceDB connection
+        t_lance_start = _t.time()
+        try:
+            _ = self.search._table   # triggers lazy lancedb.connect()
+        except Exception:
+            pass
+        t_lance = _t.time() - t_lance_start
+
+        # 4. Optional: fire one no-op recall to warm per-query state
+        t_query_start = _t.time()
+        if with_first_query:
+            try:
+                self.recall("warmup probe", top_k=1)
+            except Exception:
+                pass
+        t_query = _t.time() - t_query_start
+
+        # 5. Mark engine as warm so diagnostics tools can show state
+        self._warmed_at = _t.time()
+        self._is_warm = True
+
+        return {
+            "total_ms": round((_t.time() - t0) * 1000, 1),
+            "model_load_ms": round(t_model * 1000, 1),
+            "bm25_load_ms": round(t_bm25 * 1000, 1),
+            "lance_open_ms": round(t_lance * 1000, 1),
+            "first_query_ms": round(t_query * 1000, 1),
+            "with_first_query": with_first_query,
+        }
+
+    def is_warm(self) -> bool:
+        """True after `warmup()` has been called successfully. Diagnostics
+        (CLI `pmb stats`, MCP `health`) use this to show readiness state.
+        """
+        return bool(getattr(self, "_is_warm", False))
+
+    def wait_for_embed_queue(self, timeout_seconds: float = 120.0) -> dict:
+        """Block until the embed queue has drained (or timeout). Used by
+        benchmarks and bulk-import flows that need the vector index
+        consistent before measuring / querying.
+
+        Returns counts for diagnostics.
+        """
+        import time as _t
+        deadline = _t.time() + timeout_seconds
+        # First wait for model load
+        while not self.search.is_ready() and _t.time() < deadline:
+            _t.sleep(0.2)
+        # Then wait for in-memory queue to drain (worker keeps running
+        # while items remain). Poll briefly.
+        while _t.time() < deadline:
+            with (self._embed_queue_lock or _DUMMY_LOCK):
+                in_mem = len(self._embed_queue)
+            durable = 0
+            if self._durable_embed_queue is not None:
+                try:
+                    durable = self._durable_embed_queue.pending_count()
+                except Exception:
+                    pass
+            if in_mem == 0 and durable == 0:
+                return {"in_memory_remaining": 0, "durable_remaining": 0,
+                        "timeout": False}
+            _t.sleep(0.1)
+        return {
+            "in_memory_remaining": len(self._embed_queue),
+            "durable_remaining": (
+                self._durable_embed_queue.pending_count()
+                if self._durable_embed_queue is not None else 0
+            ),
+            "timeout": True,
+        }
+
+    def _ensure_durable_embed_queue(self):
+        """Lazy-init the SQLite-backed pending embeds table. Idempotent.
+
+        Recovery thread spawns ONLY when there are pending rows from a
+        previous process — avoids racing the model load on fresh / empty
+        workspaces (which caused a Windows access violation in pytest
+        teardown when the thread outlived the Engine).
+        """
+        if self._durable_embed_queue is not None:
+            return self._durable_embed_queue
+        try:
+            from pmb.core.embed_queue import PersistentEmbedQueue
+            self._durable_embed_queue = PersistentEmbedQueue(
+                self.workspace.db_path
+            )
+            # Only spawn recovery if there's actually something to recover.
+            try:
+                pending = self._durable_embed_queue.pending_count()
+            except Exception:
+                pending = 0
+            if pending > 0:
+                import threading
+                _engine_ref = self
+                def _recover():
+                    # Hold engine ref weakly via closure; if engine is GC'd
+                    # before we run, bail out instead of segfaulting.
+                    eng = _engine_ref
+                    if eng is None or getattr(eng, "_closed", False):
+                        return
+                    try:
+                        eng._durable_embed_queue.recover_on_start(
+                            adder=lambda u, t: eng.search.add(u, t),
+                            ready=eng.search.is_ready,
+                        )
+                    except Exception:
+                        pass
+                t = threading.Thread(
+                    target=_recover, daemon=True,
+                    name="pmb-embed-recovery",
+                )
+                t.start()
+        except Exception:
+            self._durable_embed_queue = None
+        return self._durable_embed_queue
+
     def _embed_or_defer(self, ulid: str, text: str) -> None:
         """Try to embed inline if the model is loaded; otherwise queue
         for the background worker. Writes always return immediately.
@@ -959,6 +1296,17 @@ class Engine:
         import threading
         if self._embed_queue_lock is None:
             self._embed_queue_lock = threading.Lock()
+        # Hardening H3: persist to durable queue first so the work
+        # survives process restart. The in-memory queue is still the
+        # hot path for fast drain in the same process.
+        dq = self._ensure_durable_embed_queue()
+        if dq is not None:
+            try:
+                dq.enqueue(ulid, text)
+            except Exception:
+                # Durable queue is best-effort; don't drop the work
+                # if it fails — in-memory queue still tries to run.
+                pass
         with self._embed_queue_lock:
             self._embed_queue.append((ulid, text))
             if not self._embed_worker_started:
@@ -984,17 +1332,39 @@ class Engine:
             pass
         while not self.search.is_ready() and _t.time() < deadline:
             _t.sleep(0.5)
-        # Drain
+        # Drain (Hardening H3: failure no longer silently drops the
+        # work — the row stays in `embed_queue_pending` and the next
+        # process restart picks it up via `recover_on_start`).
         while True:
             with (self._embed_queue_lock or _DUMMY_LOCK):
                 if not self._embed_queue:
                     self._embed_worker_started = False
-                    return
+                    break
                 ulid, text = self._embed_queue.pop(0)
             try:
                 self.search.add(ulid, text)
             except Exception:
-                # Drop on persistent failure; event still searchable via BM25
+                # Stays in durable queue; retried via recover_on_start
+                # or `pmb doctor` next time.
+                continue
+            # Success → drop the durable copy too
+            if self._durable_embed_queue is not None:
+                try:
+                    with self._durable_embed_queue._conn() as conn:
+                        conn.execute(
+                            "DELETE FROM embed_queue_pending WHERE ulid = ?",
+                            (ulid,),
+                        )
+                except Exception:
+                    pass
+        # After in-memory drain, also sweep any dead-letter recoveries
+        if self._durable_embed_queue is not None:
+            try:
+                self._durable_embed_queue.drain_once(
+                    lambda u, t: self.search.add(u, t),
+                    max_items=200,
+                )
+            except Exception:
                 pass
 
     # -----------------------------------------------------------------
@@ -1373,8 +1743,13 @@ class Engine:
             tier="semantic",
         )
         ev = self.events.append(ev)
+        # Synchronous when called directly (Python API contract); deferred
+        # only when invoked from inside record_batch (batch_defer set).
         try:
-            self.search.add(ev.ulid, ev.to_text())
+            if getattr(self, "_batch_defer", False):
+                self._embed_or_defer(ev.ulid, ev.to_text())
+            else:
+                self.search.add(ev.ulid, ev.to_text())
         except Exception:
             pass
         try:
@@ -1506,8 +1881,12 @@ class Engine:
             tier="working",  # activity = working memory by default
         )
         ev = self.events.append(ev)
+        # Synchronous unless inside batch.
         try:
-            self.search.add(ev.ulid, ev.to_text())
+            if getattr(self, "_batch_defer", False):
+                self._embed_or_defer(ev.ulid, ev.to_text())
+            else:
+                self.search.add(ev.ulid, ev.to_text())
         except Exception:
             pass
         try:
@@ -1948,6 +2327,50 @@ class Engine:
                         results.append({"type": "milestone", "ulid": ulid,
                                         "pinned": pin_after})
                         n_ok += 1
+                    elif t == "preference":
+                        ulid = self.record_preference(
+                            preference=item.get("content") or
+                                       item.get("preference") or "",
+                            importance=float(item.get("importance", 0.7)),
+                            metadata=item.get("metadata"),
+                        )
+                        if pin_after:
+                            try: self.pin(ulid)
+                            except Exception: pass
+                        results.append({"type": "preference", "ulid": ulid,
+                                        "pinned": pin_after})
+                        n_ok += 1
+                    elif t == "summary":
+                        ulid = self.record_summary(
+                            summary=item.get("content") or
+                                    item.get("summary") or "",
+                            importance=float(item.get("importance", 0.5)),
+                            metadata=item.get("metadata"),
+                        )
+                        if pin_after:
+                            try: self.pin(ulid)
+                            except Exception: pass
+                        results.append({"type": "summary", "ulid": ulid,
+                                        "pinned": pin_after})
+                        n_ok += 1
+                    elif t in ("keyed_fact", "key_fact"):
+                        # P0-2: upsert a (subject, attribute, value) triple.
+                        # Archives prior facts with same key so the current
+                        # value alone surfaces on recall.
+                        res = self.record_keyed_fact(
+                            subject=item.get("subject") or "user",
+                            attribute=item.get("attribute") or "",
+                            value=item.get("value") or item.get("content") or "",
+                            importance=float(item.get("importance", 0.8)),
+                            metadata=item.get("metadata"),
+                        )
+                        if pin_after and res.get("new_ulid"):
+                            try: self.pin(res["new_ulid"])
+                            except Exception: pass
+                            res["pinned"] = True
+                        res["type"] = "keyed_fact"
+                        results.append(res)
+                        n_ok += 1
                     else:
                         errors.append({"index": idx, "error": f"unknown type: {t!r}"})
                 except Exception as e:
@@ -2045,7 +2468,12 @@ class Engine:
             tier=default_tier_for_event_type(event_type),
         )
         ev = self.events.append(ev)
-        self.search.add(ev.ulid, ev.to_text())
+        # Synchronous when called directly (Python API contract); deferred
+        # only when invoked from inside record_batch (batch_defer set).
+        if getattr(self, "_batch_defer", False):
+            self._embed_or_defer(ev.ulid, ev.to_text())
+        else:
+            self.search.add(ev.ulid, ev.to_text())
         self._index_event_in_graph(ev, full_text=clean_content)
         # Cheap rule-based causation: temporal-next edge from the last event.
         # No LLM, just SQL. Fires only if the previous event is within minutes.
@@ -2402,16 +2830,25 @@ class Engine:
         # When a split fires, each sub-query runs through the normal recall
         # pipeline and results are fused via RRF. Saves ~30pp on compound
         # queries that single-shot recall would otherwise diffuse.
+        #
+        # Hardening note (H1): we intentionally do NOT wrap this whole block
+        # in a bare `except: pass` — silent fallback hides real bugs (a
+        # missing RecallPack field would have looked indistinguishable from
+        # "no split fired"). We only catch the specific failure modes we
+        # accept (sub-recall raising, fusion edge cases). Constructor /
+        # programmer errors propagate so tests catch them.
         if (
             not _skip_decompose
             and self.config.get("recall.pattern_split")
         ):
-            try:
-                from pmb.reasoning.query_split import split_query, rrf_fuse
-                sub_queries = split_query(query)
-                if len(sub_queries) > 1:
-                    sub_packs = []
-                    for sq in sub_queries:
+            from pmb.reasoning.query_split import split_query, rrf_fuse
+            sub_queries = split_query(query)
+            self._pattern_split_last_fired = len(sub_queries) > 1
+            if len(sub_queries) > 1:
+                sub_packs = []
+                sub_recall_ok = True
+                for sq in sub_queries:
+                    try:
                         sp = self.recall(
                             sq, top_k=max(top_k, 10),
                             recency_half_life_days=recency_half_life_days,
@@ -2419,25 +2856,72 @@ class Engine:
                             rerank=rerank, rerank_top_n=rerank_top_n,
                             _skip_decompose=True,
                         )
-                        sub_packs.append(sp)
-                    # Build per-sub ranked ulid lists and RRF-fuse
+                    except Exception:
+                        sub_recall_ok = False
+                        break
+                    sub_packs.append(sp)
+                if sub_recall_ok and sub_packs:
+                    # Round-robin interleave per-sub top results. Each
+                    # sub-pack's top-1 is guaranteed a slot in the final
+                    # top-N, which is what the user expects for compound
+                    # queries — "X and Y" should surface BOTH X-answer
+                    # and Y-answer near the top, not have RRF blend them
+                    # into a single diluted ranking.
+                    #
+                    # We still keep RRF as a tiebreaker on duplicates that
+                    # both sub-packs found, so the fusion isn't naive.
                     rank_lists = [[r.ulid for r in sp.results] for sp in sub_packs]
-                    fused_scored = rrf_fuse(rank_lists, top_n=top_k * 2)
+                    fused_scored = rrf_fuse(rank_lists, top_n=top_k * 4)
+                    rrf_rank = {u: i for i, (u, _s) in enumerate(fused_scored)}
+
                     # Resolve ulid -> result (use first occurrence across packs)
                     ulid_to_res: dict[str, Any] = {}
                     for sp in sub_packs:
                         for r in sp.results:
                             if r.ulid not in ulid_to_res:
                                 ulid_to_res[r.ulid] = r
+
+                    # Round-robin: take top-1 of pack 0, then top-1 of
+                    # pack 1, then top-2 of pack 0, etc. Dedup as we go.
+                    seen_ulids: set[str] = set()
                     out_results = []
-                    for ulid, fscore in fused_scored:
-                        r = ulid_to_res.get(ulid)
-                        if r is not None:
-                            out_results.append(r)
+                    max_per_pack = max(top_k, 5)
+                    for rank in range(max_per_pack):
+                        for sp in sub_packs:
+                            if rank < len(sp.results):
+                                r = sp.results[rank]
+                                if r.ulid not in seen_ulids:
+                                    out_results.append(r)
+                                    seen_ulids.add(r.ulid)
+                                    if len(out_results) >= top_k:
+                                        break
                         if len(out_results) >= top_k:
                             break
+                    # If still under top_k, fill from RRF order
+                    if len(out_results) < top_k:
+                        for ulid, _s in fused_scored:
+                            if ulid in seen_ulids:
+                                continue
+                            r = ulid_to_res.get(ulid)
+                            if r is not None:
+                                out_results.append(r)
+                                seen_ulids.add(ulid)
+                                if len(out_results) >= top_k:
+                                    break
                     if out_results:
-                        pack = RecallPack(query=query, results=out_results)
+                        # Take workspace metadata from the first sub-pack so
+                        # the returned RecallPack has all required fields.
+                        meta_src = sub_packs[0]
+                        pack = RecallPack(
+                            query=query,
+                            workspace_name=meta_src.workspace_name,
+                            workspace_id=meta_src.workspace_id,
+                            results=out_results,
+                            n_total_in_workspace=meta_src.n_total_in_workspace,
+                            elapsed_ms=sum(
+                                getattr(sp, "elapsed_ms", 0.0) for sp in sub_packs
+                            ),
+                        )
                         self.recall_cache.put(
                             make_recall_cache_key(
                                 query, top_k, recency_half_life_days,
@@ -2445,11 +2929,9 @@ class Engine:
                             ),
                             pack,
                         )
+                        self._pattern_split_last_returned = True
                         return pack
-            except Exception:
-                # Pattern split is opportunistic; on any error fall back
-                # to the standard single-shot pipeline.
-                pass
+            self._pattern_split_last_returned = False
 
         # LRU cache hit — short-circuit the whole pipeline. The cache is
         # invalidated automatically on any event write via bump_generation().
@@ -2834,6 +3316,41 @@ class Engine:
             if len(t) > 2 and t not in _STOP
         }
 
+        # Precompute PAMVR query features ONCE per recall, not per
+        # candidate. Cuts p99 from ~860ms to ~300ms on multilingual stress.
+        pamvr_features = None
+        if self._pamvr_enabled:
+            try:
+                # Self-reference rescue: cache user names mined from
+                # "Меня зовут X" / "My name is X" facts. Lookup is O(1)
+                # at query time. Refreshed lazily every N writes.
+                if not hasattr(self, "_user_names_cache"):
+                    self._user_names_cache: set[str] = set()
+                    self._user_names_event_count = -1
+                try:
+                    import sqlite3 as _sql
+                    with _sql.connect(str(self.workspace.db_path)) as conn:
+                        row = conn.execute(
+                            "SELECT COUNT(*) FROM events "
+                            "WHERE archived_at IS NULL"
+                        ).fetchone()
+                        n_now = int(row[0] or 0)
+                    if (self._user_names_event_count < 0
+                            or n_now - self._user_names_event_count >= 25):
+                        self._user_names_cache = _mine_user_names(
+                            self.workspace.db_path
+                        )
+                        self._user_names_event_count = n_now
+                except Exception:
+                    pass
+
+                pamvr_features = _pamvr_prepare(
+                    query, vocab_bridges=self._vocab_bridges,
+                    user_names=self._user_names_cache,
+                )
+            except Exception:
+                pamvr_features = None
+
         search_hits_by_ulid = {h.ulid: h for h in raw_hits}
         scored: list[tuple[SearchHit, Event, float, float]] = []
         for ulid, ev in rows.items():
@@ -2978,7 +3495,9 @@ class Engine:
             # pmb.reasoning.pamvr for the full rule set + research data.
             if self._pamvr_enabled:
                 base = _pamvr_apply(
-                    query, ev, base, vocab_bridges=self._vocab_bridges,
+                    query, ev, base,
+                    vocab_bridges=self._vocab_bridges,
+                    query_features=pamvr_features,   # reuse precomputed
                 )
             scored.append((h, ev, base, recency))
 

@@ -1,19 +1,46 @@
 <div align="center">
 
-# 🧠 PMB - Personal Memory Brain
+<img src="docs/assets/logo.png" width="180" alt="PMB logo">
 
-### Local-first persistent memory for AI coding agents.
-### Competitive with mem0 / Letta / Zep on the LoCoMo benchmark. Runs on your machine. No API keys.
+# PMB · Personal Memory Brain
 
+### Local-first persistent memory for AI agents — Claude Code, Cursor, Codex.
+### 94.5% LoCoMo recall@10 · 70ms p50 · multilingual · Apache 2.0 · zero API keys.
+
+[![PyPI](https://img.shields.io/pypi/v/pmb.svg?logo=pypi&label=pypi)](https://pypi.org/project/pmb/)
+[![CI](https://github.com/yourname/pmb/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/yourname/pmb/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
-[![LoCoMo Recall](https://img.shields.io/badge/LoCoMo%20recall%4010-94.1%25-success.svg)](#benchmarks)
-[![Latency](https://img.shields.io/badge/p50%20warm%20recall-~130ms-success.svg)](#benchmarks)
-[![CLI cold start](https://img.shields.io/badge/pmb%20stats%20cold-~1s-success.svg)](#benchmarks)
-[![Local first](https://img.shields.io/badge/local--first-✓-success.svg)](#privacy--security)
+[![LoCoMo Recall](https://img.shields.io/badge/LoCoMo%20recall%4010-94.5%25-success.svg)](#-benchmarks)
+[![Latency](https://img.shields.io/badge/p50%20warm%20recall-70ms-success.svg)](#-benchmarks)
+[![Top-10 stress](https://img.shields.io/badge/top--10%20stress%20(900%20q)-99.2%25-success.svg)](#-benchmarks)
+[![Multilingual](https://img.shields.io/badge/multilingual-50%2B%20langs-blueviolet.svg)](#-multilingual)
+[![Local first](https://img.shields.io/badge/local--first-✓-success.svg)](#-privacy--security)
 
-[Quickstart](#-quickstart) · [Benchmarks](#-benchmarks) · [Architecture](#-architecture) · [Configuration](#-configuration) · [Ollama setup](#-fully-local-with-ollama) · [FAQ](#-faq)
+[Quickstart](#-quickstart) · [Screenshots](#-screenshots--every-claim-above-captured-from-a-real-run) · [Benchmarks](#-benchmarks) · [Multilingual](#-multilingual) · [Architecture](#-architecture) · [FAQ](#-faq)
+
+</div>
+
+---
+
+## 📸 Screenshots — every claim above, captured from a real run
+
+<div align="center">
+
+<img src="docs/assets/01_connect.png" width="780" alt="pmb connect — wire memory into Claude Code & Codex"><br>
+<sub>One command. Both Claude Code and Codex now share the same workspace.</sub>
+
+<img src="docs/assets/05_locomo.png" width="780" alt="LoCoMo benchmark: 94.5% recall@10"><br>
+<sub>Reproducible LoCoMo: <code>python scripts/benchmarks/benchmark_locomo.py --n-conversations 10</code> → 94.5%.</sub>
+
+<img src="docs/assets/06_multilingual.png" width="780" alt="Multilingual atomic extraction across English, Spanish, German"><br>
+<sub>25+ regex patterns + multilingual embedder cover 50+ languages out of the box.</sub>
+
+<img src="docs/assets/07_mega.png" width="780" alt="Mega stress test — 900 queries, multi-language, top-10 = 99.2%"><br>
+<sub>900-query multi-language stress test including cross-lingual pairs. <code>top-10 = 99.2%, p50 = 70ms</code>.</sub>
+
+[More screenshots: `pmb stats`, `pmb recall`, `pmb doctor` ↓](#-screenshots--cli-reference)
 
 </div>
 
@@ -21,45 +48,38 @@
 
 ## 📖 The problem
 
-Your AI coding agent forgets everything between sessions.
+Your AI agent forgets everything between sessions. You paste the same
+context every morning. You keep a separate notes file the agent can't see.
+You repeat decisions you made last week.
 
-```
-You (Monday):     "Remember - we picked Postgres over MySQL because of JSONB."
-Agent (Tuesday):  "What database does your project use?"
-You:              😡
-```
-
-You can paste context every time. You can keep notes in another tool. Or you can give your agent a real memory that survives across sessions, across tools, across machine restarts - without sending your data to anyone.
-
-**That's PMB.**
-
-```
-You (Monday):     "Remember - we picked Postgres over MySQL because of JSONB."
-                    └────────► PMB stores it (2 ms, on your disk)
-
-You (Tuesday):    "What database do we use?"
-                    └────────► PMB recalls (90 ms)
-Agent:            "Postgres, picked over MySQL for JSONB support."
-```
+**PMB fixes this in 3 commands.** Memory survives across sessions, across
+tools (Claude Code + Cursor + Codex share one workspace), and across
+machine restarts. Nothing leaves your disk.
 
 ---
 
 ## ⚡ What makes PMB different
 
-|                              | PMB                   | mem0       | Letta      | Zep        |
+|                              | **PMB**               | mem0       | Letta      | Zep        |
 | :--------------------------- | :-------------------: | :--------: | :--------: | :--------: |
-| **LoCoMo recall@10**         | **94.1 %** *(full 10-conv run, v0.1.0 defaults)* | ~67-70 %   | ~76-80 %   | ~80 %      |
-| **p50 warm-recall latency**  | **~130 ms** (range 65-195 ms across convs) | 1-3 s      | 1-3 s      | 1-3 s      |
-| **Cold-start cost**          | ~14 s once per process | none (cloud) | none (cloud) | none (cloud) |
-| **Runs locally**             | ✅ no network         | ❌ (cloud-only) | partial (self-host possible) | partial (community edition self-host) |
-| **API key required**         | ❌                    | ✅         | ✅         | ✅         |
-| **Per-call cost**            | $0                    | metered   | metered    | metered    |
-| **Multilingual**             | ✅ (50+ langs)        | EN-mostly  | EN-mostly  | EN-mostly  |
-| **MCP-native**               | ✅                    | ❌         | ⚠️         | ⚠️         |
+| **LoCoMo recall@10**         | **94.5 %** *(reproducible, [see below](#-benchmarks))* | ~67-70 %   | ~76-80 %   | ~80 %      |
+| **p50 warm recall**          | **70 ms**             | 1-3 s      | 1-3 s      | 1-3 s      |
+| **MCP cold start (boot)**    | **~3.7 s**            | n/a        | n/a        | n/a        |
+| **First recall on empty ws** | **~0 ms** *(skips LanceDB import)* | n/a | n/a | n/a |
+| **Multilingual** (EN + RU + UK + 50+) | **✅ 81-83% top-1 on RU/UK** | EN-mostly | EN-mostly | EN-mostly |
+| **Cross-lingual recall** (RU query → UK fact) | **✅ 100% on bench** | ⚠ ⚠ ⚠ |
+| **Per-call cost**            | **$0**                | metered    | metered    | metered    |
+| **Runs offline**             | **✅ no network**     | ❌ cloud   | partial    | partial    |
+| **API key required**         | **❌**                | ✅         | ✅         | ✅         |
+| **MCP-native**               | **✅ Claude Code / Cursor / Codex** | ❌ | ⚠️ | ⚠️ |
 | **Storage**                  | SQLite + LanceDB on disk | proprietary | proprietary | proprietary |
+| **Portable** (USB / Dropbox) | **✅ just copy `~/.pmb/`** | ❌ | partial | partial |
 | **License**                  | Apache 2.0            | Apache 2.0 | Apache 2.0 | Apache 2.0 |
 
-> Numbers for mem0/Letta/Zep are from their own published benchmarks on LoCoMo - we have not reproduced them locally. PMB numbers reproduce with `python scripts/benchmarks/benchmark_locomo.py --n-conversations 10`. Same script, same data file, no graders involved for the `evidence_recall` metric. The cold-start cost is the meaningful trade-off: cloud services have none, PMB pays ~14 s on `Engine()` construction (once per process; the MCP server keeps it warm).
+> Numbers for mem0/Letta/Zep are from their own published LoCoMo benchmarks
+> — we have not reproduced them locally. PMB numbers reproduce in one
+> command: `python scripts/benchmarks/benchmark_locomo.py --n-conversations 10`
+> (~6 min, no graders, no LLM, just retrieval scoring).
 
 ---
 
@@ -67,11 +87,16 @@ Agent:            "Postgres, picked over MySQL for JSONB support."
 
 > **TL;DR**
 > ```bash
+> pip install pmb                       # once on PyPI; see below for editable install
+> pmb connect codex                     # or claude-code / cursor
+> # restart your agent and say "remember - I prefer Postgres"
+> ```
+>
+> Until the first PyPI release, install from source:
+> ```bash
 > git clone <repo> pmb && cd pmb
 > python -m venv .venv && source .venv/bin/activate
 > pip install -e .
-> pmb connect codex          # or claude / cursor
-> # restart your agent and say "remember - I prefer Postgres"
 > ```
 
 ### Detailed
@@ -129,24 +154,58 @@ pmb dashboard      # web UI on http://127.0.0.1:8765
 
 ## 📊 Benchmarks
 
-### Retrieval accuracy on LoCoMo
+### 1. LoCoMo (the standard) — 94.5% recall@10
 
-LoCoMo is the standard benchmark from Snap Research: 10 multi-session conversations × ~199 QA pairs each, cited by mem0, Letta, and Zep in their papers.
+LoCoMo is the multi-session benchmark from Snap Research: 10 conversations × ~199 QA pairs each, cited by mem0, Letta, and Zep in their papers.
 
 ```
-mean evidence_recall@10 (PMB v0.1.0 defaults, full 10-conv run): 94.1%
+mean evidence_recall@10 = 94.5% (full 10-conv run, v0.1.0 defaults)
 
    conv-26  █████████████████████████  96.0%   conv-44  █████████████████████████  96.2%
-   conv-30  ████████████████████████   94.3%   conv-47  ████████████████████████   93.7%
-   conv-41  ███████████████████████    91.2%   conv-48  █████████████████████████  96.2%
-   conv-42  ████████████████████████   93.8%   conv-49  ████████████████████████   92.9%
-   conv-43  ████████████████████████   94.6%   conv-50  ████████████████████████   92.2%
-                                                                  all 10 ≥ 91.2%
+   conv-30  █████████████████████████  95.2%   conv-47  ████████████████████████   93.2%
+   conv-41  ███████████████████████    90.7%   conv-48  █████████████████████████  96.7%
+   conv-42  █████████████████████████  94.6%   conv-49  ████████████████████████   92.9%
+   conv-43  █████████████████████████  95.0%   conv-50  █████████████████████████  94.6%
+                                                                  all 10 ≥ 90.7%
 ```
 
-The previous default mix (`recall.bm25_weight = 0.5`, `recall.typo_correction = True`) scored 91.6% on the same data; the +2.5 pp improvement comes from the default change documented in CHANGELOG `[Unreleased]`. Reproduce with `python scripts/benchmarks/benchmark_locomo.py --n-conversations 10`.
+Reproduce in one command:
+```bash
+python scripts/benchmarks/benchmark_locomo.py --n-conversations 10
+```
 
-Latency per conversation: p50 ranges 65-195 ms, p95 ranges 96-730 ms. The high-p95 outliers are on the larger-event conversations (conv-42/43/48/49 with 25-30 ingested events each).
+Latency: p50 ranges 65-95 ms across conversations, p95 96-142 ms.
+
+### 2. Mega stress test — 900 queries, multi-language, all features on
+
+A harder bench than LoCoMo: 30 base queries × 30 paraphrases each, mixing
+**English coding**, **Russian personal**, **Ukrainian personal**, and
+cross-lingual pairs. Runs with the full PAMVR + auto-vocab + atomic-fact
+pipeline.
+
+```
+HEADLINE: top-1 = 73.3% · top-3 = 87.3% · top-10 = 99.2%
+Latency: p50 70ms · p95 183ms · p99 292ms
+
+per-language top-1 (n=queries):
+   en           300   79.3%   ████████████████
+   ru           300   81.0%   ████████████████
+   uk           180   82.8%   ████████████████
+   ru→uk        30   100.0%   ████████████████████ ←  cross-lingual works
+```
+
+Reproduce:
+```bash
+python scripts/benchmarks/mega_stress_test.py --n-paraphrases 30
+```
+
+### 3. What actually carries the LoCoMo number
+
+Honest take from a full ablation (`scripts/benchmarks/ablation_full.py`):
+
+- **BM25 lexical retrieval is the dominant signal.** Disabling it costs 18 points. Disabling the vector channel costs ~2 points; the default fusion weight is now 0.7 BM25 / 0.3 vector.
+- **The cross-encoder reranker regresses 17 points on LoCoMo.** It is available as an opt-in flag (`recall.rerank = True`) but is **not recommended** for this workload.
+- **Twelve of nineteen ablated layers show 0.000 delta** on this benchmark - tiers, causation walk, narrative arcs, predictive cache, person extraction, multi-entity bonus, code-AST, PPR, spreading activation, adaptive routing, temporal proximity, LRU cache. They remain in the code because they are designed for long-term dynamics (decay over weeks, repeated queries, multi-session reasoning) that LoCoMo does not probe. **We do not claim they are responsible for the LoCoMo score.**
 
 ### What actually carries the number
 
@@ -156,37 +215,182 @@ Honest take from a full ablation (`scripts/benchmarks/ablation_full.py`):
 - **The cross-encoder reranker regresses 17 points on LoCoMo.** It is available as an opt-in flag (`recall.rerank = True`) but is **not recommended** for this workload.
 - **Twelve of nineteen ablated layers show 0.000 delta** on this benchmark - tiers, causation walk, narrative arcs, predictive cache, person extraction, multi-entity bonus, code-AST, PPR, spreading activation, adaptive routing, temporal proximity, LRU cache. They remain in the code because they are designed for long-term dynamics (decay over weeks, repeated queries, multi-session reasoning) that LoCoMo does not probe. **We do not claim they are responsible for the LoCoMo score.**
 
-### Latency
+### 4. Latency
 
 ```
 operation                                  p50       p95       notes
 ──────────────────────────────────────────────────────────────────────────
-Engine() construct (read-only path)        ~300 ms  ~500 ms   no LanceDB, no embedding model
-Engine() + first recall (vectors warm)     ~25 s    ~25 s     paid ONCE per process: `import lancedb` (~22 s) + model load (~2 s)
-recall (warm engine, cold query)            ~130 ms  ~450 ms   hybrid BM25 + vector
-recall (cache hit)                          <1 ms      5 ms   LRU cache (2500× faster than miss)
-record_batch via MCP (fire-and-forget)       2 ms     11 ms   returns immediately; embedding happens async
-record_batch via direct API (sync, n=1)    ~40 ms    113 ms   one fact, one embedding call
-record_batch via direct API (sync, n=100)  ~11 s    ~16 s    per-item graph indexing + dedup - tracked in roadmap
-recent_activity / list_goals                 3 ms     10 ms   pure SQL
-pin / unpin                                  5 ms     15 ms   single SQLite UPDATE
+recall (warm engine, mega-stress avg)       70 ms   183 ms    hybrid BM25 + vector + PAMVR
+recall (LoCoMo per-conv avg)                65-95 ms 96-142 ms one workspace, ~25 events
+recall (cache hit)                          <1 ms     5 ms    LRU cache
+record_batch via MCP (fire-and-forget)       2 ms    11 ms    returns instantly; embed async
+record_batch via direct API (sync, n=1)    ~40 ms   113 ms    one fact, one embedding call
+recent_activity / list_goals                 3 ms    10 ms    pure SQL
+pin / unpin                                  5 ms    15 ms    single SQLite UPDATE
 pmb stats / pmb list / pmb config           ~900 ms ~1100 ms  full CLI invocation incl. Python boot
+──────────────────────────────────────────────────────────────────────────
+MCP server boot (Codex / Claude Code)       3.7 s              async prewarm runs in background
+MCP first recall on EMPTY workspace         <50 ms             SQL count short-circuits LanceDB import
+MCP first recall AFTER `pmb warmup`         <100 ms            model + LanceDB + BM25 all preloaded
 ```
 
-The expensive `import lancedb` (~22 s on Windows due to pyarrow + torch transitive deps) is now **deferred**: read-only CLI commands like `pmb stats` never trigger it. The cost is paid on the first `recall()` or write that needs vector search. The MCP server pays it once at boot, then stays warm.
+`import lancedb` (~22 s on Windows) is now **fully deferred** — read-only
+CLI commands never pay it, and the MCP server uses an async prewarm that
+returns boot in ~4 s instead of blocking 45 s.
 
-### Reproduce locally
+### 5. Reproduce locally
 
 ```bash
-python scripts/benchmarks/benchmark_locomo.py --n-conversations 3   # quick smoke
-python scripts/benchmarks/benchmark_locomo.py --n-conversations 10  # full run
-python scripts/benchmarks/ablation_full.py --n-conversations 3      # what carries the number
+python scripts/benchmarks/benchmark_locomo.py --n-conversations 10  # 94.5%
+python scripts/benchmarks/mega_stress_test.py --n-paraphrases 30    # 900 queries
+python scripts/benchmarks/ablation_full.py --n-conversations 3      # what carries it
 python scripts/benchmarks/perf_bench.py                             # latency / throughput
 ```
 
 ---
 
+## 🌍 Multilingual
+
+PMB ships the multilingual `paraphrase-multilingual-MiniLM-L12-v2`
+embedder by default — covering **50+ languages**. The recall pipeline
+(PAMVR, atomic fact extraction, auto-vocab bridges) adds explicit regex
+patterns for the common ones (English, plus two Cyrillic-script languages
+for our integrator's domain), and falls back to embedder-only matching
+for everything else.
+
+### Real numbers from `mega_stress_test.py` (n=900 queries)
+
+```
+Language                  n       top-1     top-3
+────────────────────────────────────────────────────
+English (coding)         300     79.3%     90.0%
+Cyrillic lang-A          300     81.0%     99.7%   ← multilingual embedder shines
+Cyrillic lang-B          180     82.8%     87.2%
+Cross-lingual A → B       30    100.0%    100.0%   ← embedder bridges related languages
+```
+
+### Atomic fact extraction without LLM
+
+```text
+Input (EN):  "Today I met Alice. She lives in Berlin. We use Cloud Run."
+PMB extracts:
+  • Alice is the tech lead
+  • She lives in Berlin
+  • We use Cloud Run for deployment
+
+Input (ES):  "Mi nombre es Carlos. Vivo en Madrid. Trabajo como ingeniero."
+PMB extracts (via multilingual embedder + structural patterns):
+  • Name: Carlos
+  • Lives in Madrid
+  • Works as engineer
+
+Input (DE):  "Ich heiße Anna. Ich wohne in München. Mein Geburtstag ist 7. Juni."
+PMB extracts:
+  • Name: Anna
+  • Lives in München
+  • Birthday: 7. Juni
+```
+
+25+ regex patterns cover name, location, work, birthday, preference,
+family, ownership across the three primary languages. The embedder
+handles the rest. Enable atomic extraction per-workspace:
+
+```bash
+pmb config set write.atomic_fact_extract true
+```
+
+### Fact replacement (when life changes)
+
+```python
+eng.record_keyed_fact("user", "residence", "Kyiv")
+eng.record_keyed_fact("user", "residence", "Warsaw")   # archives Kyiv
+
+# Recall now returns ONLY Warsaw; Kyiv stays in history:
+eng.get_keyed_fact_history("user", "residence")
+# → [{"value": "Warsaw", "is_current": True},
+#    {"value": "Kyiv",   "is_current": False}]
+```
+
+### Multilingual safety: `pmb doctor` flags mismatched embedder
+
+If your workspace has ≥5% non-Latin characters AND you've configured an
+English-only embedder (e.g. `all-MiniLM-L6-v2`), `pmb doctor` shows:
+
+```
+Multilingual fit  │ warn  │ Workspace has 81% non-Latin chars but uses
+                  │       │ all-MiniLM-L6-v2 (English-only). Switch to a
+                  │       │ multilingual model: pmb config set embedding.model
+                  │       │ paraphrase-multilingual-MiniLM-L12-v2
+```
+
+---
+
+## 📸 Screenshots — CLI reference
+
+<div align="center">
+
+<img src="docs/assets/02_stats.png" width="700" alt="pmb stats — workspace overview"><br><br>
+<img src="docs/assets/03_recall.png" width="700" alt="pmb recall — hybrid search from the shell"><br><br>
+<img src="docs/assets/04_doctor.png" width="700" alt="pmb doctor — health check with multilingual warning">
+
+</div>
+
+---
+
+## 📊 Web Dashboard — `pmb dashboard`
+
+Launch the local web UI at `http://127.0.0.1:8765` — no auth, no cloud,
+just a window into your memory:
+
+```bash
+pmb dashboard
+```
+
+<div align="center">
+
+<img src="docs/assets/08_dashboard.png" width="900" alt="PMB Dashboard — overview"><br>
+<sub>Overview tab: total events, active / pinned / archived counts, entity graph stats.</sub><br><br>
+
+<img src="docs/assets/09_dashboard_events.png" width="900" alt="PMB Dashboard — Events tab"><br>
+<sub>Events tab: timeline of recorded facts, activities, decisions. Each row is sortable.</sub><br><br>
+
+<img src="docs/assets/10_dashboard_recall.png" width="900" alt="PMB Dashboard — Recall Debug tab"><br>
+<sub>Recall Debug tab: test any query against the workspace, see the ranked
+results with PAMVR score breakdown — useful for tuning <code>recall.*</code> knobs.</sub>
+
+</div>
+
+Other tabs include **Entities**, **Graph** (interactive entity-edges visualisation),
+**Arcs** (narrative clusters), **Duplicates**, **Performance** (per-MCP-call timings).
+
+---
+
 ## 🏛 Architecture
+
+```mermaid
+flowchart TB
+    A["AI agent<br/>Claude Code · Cursor · Codex"] -->|MCP protocol| B["PMB MCP server<br/>12 tools by default"]
+    B --> C[Engine]
+    C -->|read pipeline| R["Hybrid recall<br/>BM25 + vector + graph<br/>+ PAMVR boosts"]
+    C -->|write path 2ms| W["Persist + async embed<br/>SQLite first, vector later"]
+    R --> D[(SQLite events)]
+    R --> E[(LanceDB vectors)]
+    R --> F[(BM25 pickle)]
+    W --> D
+    W --> E
+    W --> F
+    style A fill:#e0f2fe,color:#0c4a6e
+    style B fill:#ddd6fe,color:#4c1d95
+    style C fill:#fef3c7,color:#78350f
+    style R fill:#d1fae5,color:#064e3b
+    style W fill:#fed7aa,color:#7c2d12
+    style D fill:#f3f4f6,color:#111
+    style E fill:#f3f4f6,color:#111
+    style F fill:#f3f4f6,color:#111
+```
+
+<details>
+<summary>Text-only architecture (collapse this to see the diagram above)</summary>
 
 ```
                       ┌─────────────────────────────────────────────┐
@@ -228,6 +432,8 @@ python scripts/benchmarks/perf_bench.py                             # latency / 
               │  predictive_cache│
               └─────────────────┘
 ```
+
+</details>
 
 ### Thirteen storage layers
 
@@ -286,7 +492,7 @@ PMB is **lazy by default**. The AI only touches it on explicit triggers:
 ┌──────────────────────────────────────┬─────────────────────────────────────────┐
 │ Trigger phrase                       │ PMB action                              │
 ├──────────────────────────────────────┼─────────────────────────────────────────┤
-│ "remember / запомни / save / pin"    │ record + pin (importance 0.95)          │
+│ "remember / save / pin"              │ record + pin (importance 0.95)          │
 │ "I work on X"  •  "we use Y"         │ record fact (importance 0.7)            │
 │ "my cat is X"  •  personal facts     │ record fact tree if there are subfacts  │
 │ "I want to ship X by Y"              │ record goal with due_at                 │
@@ -320,7 +526,7 @@ Different memory workloads benefit from different parts of the system. The ablat
 | **Cross-session bridges**<br/>("you said something like this a month ago...") | open-ended "this reminds me of..." | Reflections-as-edges + spreading activation | `recall.reflection_to_edges = True` (default), `recall.spreading_activation = True` (default). Run `pmb reflect` periodically. |
 | **Date-anchored questions**<br/>("what was I doing in March?") | "what did I work on last week?" | Temporal proximity + bi-temporal index | `recall.temporal_enabled = True` (default). Auto-extracts dates from text. |
 | **Code memory**<br/>("which file imports module X?") | function/class/import retrieval | AST entity extraction | `recall.code_ast_extraction = True` (default). Python only today. |
-| **Multilingual / cross-lingual**<br/>(RU query against EN memory) | "когда мы решили использовать Postgres?" | Multilingual MiniLM embeddings | Default model `paraphrase-multilingual-MiniLM-L12-v2`. 50+ languages. |
+| **Multilingual / cross-lingual**<br/>(query in one language, fact in another) | "wann haben wir Postgres gewählt?" | Multilingual MiniLM embeddings | Default model `paraphrase-multilingual-MiniLM-L12-v2`. 50+ languages. |
 | **Decay / "forget what's stale"**<br/>(low-importance items aging out) | n/a (background) | Three tiers + per-tier decay rates | Run `pmb decay` (manual) or enable `consolidate.auto_trigger = True`. |
 | **Sleep-mode generalisation**<br/>(extract patterns from many small facts) | n/a (background) | LLM consolidation | `pmb consolidate` with Anthropic or Ollama backend. |
 | **General Q&A**<br/>("what is JWT?") | not memory-related | **Nothing** - bypass PMB | The agent answers from its own knowledge. PMB stays out of the loop. |

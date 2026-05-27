@@ -105,6 +105,29 @@ def init(
 
 
 @app.command()
+def warmup():
+    """P1-1: Eagerly load model + BM25 + LanceDB so the next recall is fast.
+
+    Without this the first query pays ~1-2s cold-start cost. Useful when
+    integrating PMB into a latency-sensitive flow (voice assistant) — call
+    `pmb warmup` at startup and the actual user-facing query is hot.
+    """
+    eng = Engine()
+    console.print("[dim]Warming up PMB (model + BM25 + LanceDB)...[/]")
+    result = eng.warmup(with_first_query=True)
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Stage")
+    table.add_column("ms")
+    table.add_row("Model load",       f"{result['model_load_ms']:.1f}")
+    table.add_row("BM25 load",        f"{result['bm25_load_ms']:.1f}")
+    table.add_row("LanceDB open",     f"{result['lance_open_ms']:.1f}")
+    table.add_row("First probe query", f"{result['first_query_ms']:.1f}")
+    table.add_row("[bold]Total[/]",   f"[bold]{result['total_ms']:.1f}[/]")
+    console.print(table)
+    console.print("[green]Engine warm.[/] Next recall will be fast.")
+
+
+@app.command()
 def stats():
     """Статистика текущего workspace."""
     eng = Engine()
@@ -1330,6 +1353,12 @@ def connect(
     console.print(
         "\n[dim]Restart your agent so it picks up the new MCP entry. "
         "Run `pmb doctor` to see the full local state.[/]"
+    )
+    console.print(
+        "\n[yellow]Note:[/] [dim]The first recall after agent restart takes "
+        "~30-60s while the embedding model loads. Subsequent recalls return "
+        "in <100ms. To pre-warm before connecting, run [bold]pmb warmup[/] "
+        "first.[/]"
     )
 
 

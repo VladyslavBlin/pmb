@@ -68,27 +68,100 @@ VOCAB_BRIDGES: dict[str, list[str]] = {
 
 
 # Verb synonym groups for verb-match boost.
+# Cross-lingual stems included — "live" expands to RU "живу/живёт/живут"
+# AND UK "живу/живе/живуть" so that an English query asking about a
+# Russian or Ukrainian fact finds it. Closes the EN→RU=0% gap.
 VERB_SYNS: dict[str, set[str]] = {
-    "own":     {"own", "owns", "owned", "have", "has", "control", "manage"},
+    "own":     {"own", "owns", "owned", "have", "has", "control", "manage",
+                "владеть", "владею", "владеет", "володіти"},
     "pick":    {"pick", "picked", "choose", "chose", "chosen", "select",
-                "selected"},
-    "lead":    {"lead", "leading", "leads", "led", "head", "heads", "manage"},
-    "live":    {"live", "lives", "lived", "reside", "based"},
+                "selected", "выбрал", "выбрала", "выбрали", "обрати",
+                "обрав", "обрала"},
+    "lead":    {"lead", "leading", "leads", "led", "head", "heads", "manage",
+                "веду", "ведёт", "вёл", "веде", "очолює"},
+    "live":    {"live", "lives", "lived", "reside", "based",
+                # Russian conjugations
+                "живу", "живёт", "живет", "живёшь", "живут", "живём",
+                "живете", "жил", "жила", "жили", "проживает", "проживаю",
+                # Ukrainian
+                "живу", "живе", "живеш", "живуть", "живемо", "живете",
+                "жив", "жила", "жили", "мешкає", "мешкаю",
+                "переехал", "переехала", "переехали",
+                "переїхав", "переїхала", "переїхали"},
     "think":   {"think", "thinks", "thought", "argue", "argued", "believe",
-                "claim", "push", "pushed", "feel", "felt"},
+                "claim", "push", "pushed", "feel", "felt",
+                "думаю", "думает", "думал", "вважаю", "вважає"},
     "fix":     {"fix", "fixed", "patch", "patched", "hotfix", "resolved",
-                "solved"},
+                "solved", "исправил", "починил", "виправив"},
     "decide":  {"decide", "decided", "agreed", "accepted", "concluded",
-                "ratified"},
-    "deploy":  {"deploy", "deployed", "host", "hosted", "running", "runs"},
-    "migrate": {"migrate", "migrated", "switch", "switched", "move", "moved"},
-    "use":     {"use", "used", "using"},
+                "ratified", "решил", "решили", "вирішив", "вирішили"},
+    "deploy":  {"deploy", "deployed", "host", "hosted", "running", "runs",
+                "разворачиваем", "развернули", "развёрнут",
+                "розгортаємо", "розгорнули"},
+    "migrate": {"migrate", "migrated", "switch", "switched", "move", "moved",
+                "мигрировал", "мигрировали", "переключили",
+                "мігрував", "мігрували", "перейшли"},
+    "use":     {"use", "used", "using", "используем", "используется",
+                "використовуємо", "використовується"},
+    # New: work — bridges "Where does X work" to RU "работает" / UK "працює"
+    "work":    {"work", "works", "worked", "working", "job", "employed",
+                "работаю", "работает", "работаешь", "работают", "работал",
+                "працюю", "працює", "працюєш", "працюють", "працював"},
+    # New: name — "what's my name" → finds "Меня зовут"
+    "name":    {"name", "called", "зовут", "зовусь", "называют",
+                "звати", "звуть", "ім'я"},
 }
 
 
 # Named entities we recognise at query time. Extending this list per
 # workspace is the natural way to localise PAMVR.
 DEFAULT_NAMED_ENTITIES = {"alex", "bob", "carol", "dana", "alice", "stripe", "adyen"}
+
+
+# Dynamic proper-noun extractor — works on Latin AND Cyrillic AND Greek.
+# Matches any capitalised token of length >= 3 that isn't a sentence opener
+# of a known function-word (we strip those via post-filter).
+_PROPER_NOUN_RE = re.compile(
+    r"\b(?P<n>[A-ZА-ЯІЇЄҐ][a-zа-яіїєґ']{2,})\b"
+)
+
+# Function words that often appear capitalised at sentence start; they are
+# NOT proper nouns even if capitalised.
+_NOT_PROPER = {
+    # Russian
+    "когда", "почему", "где", "кто", "что", "как", "куда", "откуда",
+    "сегодня", "вчера", "завтра", "сейчас", "вот", "это", "тот",
+    "мне", "меня", "тебя", "его", "её", "их", "нас", "вас",
+    "был", "была", "было", "были", "буду", "будет", "будут",
+    "люблю", "нравится", "хочу", "могу", "должен",
+    "скажи", "расскажи", "напомни", "слушай", "знаешь",
+    # Ukrainian
+    "коли", "чому", "де", "хто", "що", "як", "куди", "звідки",
+    "сьогодні", "вчора", "завтра", "зараз", "ось", "це", "той",
+    "мене", "тебе", "його", "її", "їх", "нас", "вас",
+    "був", "була", "було", "були", "буду", "буде", "будуть",
+    "люблю", "подобається", "хочу", "можу", "мушу",
+    "скажи", "розкажи", "слухай",
+    # English
+    "the", "where", "when", "who", "what", "how", "why", "which",
+    "today", "yesterday", "tomorrow", "now", "this", "that",
+    "ill", "iam", "youre", "weve", "they", "their",
+}
+
+
+def _extract_proper_nouns(query: str) -> set[str]:
+    """Pull capitalised, 3+ char tokens (Latin or Cyrillic) that look like
+    proper nouns. Skips known function-words to avoid false matches on
+    sentence-initial capitals."""
+    out: set[str] = set()
+    for m in _PROPER_NOUN_RE.finditer(query):
+        tok = m.group("n").lower()
+        if tok in _NOT_PROPER:
+            continue
+        if tok in _STOP:
+            continue
+        out.add(tok)
+    return out
 
 
 _TIME_DURATION_RE = re.compile(
@@ -133,131 +206,138 @@ def _verb_match(query_verb: str, content_lower: str) -> bool:
     return any(re.search(rf"\b{re.escape(s)}\b", content_lower) for s in stems)
 
 
-def apply_pamvr(
+# =====================================================================
+# Precomputed query features — shared across all candidates of one recall.
+# Refactored to slash the per-candidate cost (was 4-6 regex per candidate,
+# now ~1-2). Critical for keeping p99 latency low when PAMVR is on.
+# =====================================================================
+
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class _QueryFeatures:
+    """Anything that depends ONLY on the query string. Computed once per
+    recall, reused across every candidate score boost."""
+    query: str
+    ql: str                                # lowercased query
+    qt: set[str] = field(default_factory=set)            # content tokens
+    qt_expanded: set[str] = field(default_factory=set)   # qt + vocab bridges
+    all_proper: list[str] = field(default_factory=list)  # entities + dynamic
+    proper_lower: list[str] = field(default_factory=list)
+    proper_patterns: list = field(default_factory=list)  # compiled regexes
+    query_verb: Optional[str] = None
+    verb_stems: set[str] = field(default_factory=set)
+    topic_tokens: set[str] = field(default_factory=set)
+    topic_expanded: set[str] = field(default_factory=set)
+    has_use_verb: bool = False
+    has_policy_intent: bool = False
+    policy_topic_terms: set[str] = field(default_factory=set)
+    has_time_intent: bool = False
+    has_now_intent: bool = False
+    has_quant_intent: bool = False
+    has_team_intent: bool = False
+    bridges: dict = field(default_factory=dict)
+    entities: set = field(default_factory=set)
+    bridges_in_query: list = field(default_factory=list)  # (term, syns)
+    fix_pat_kinds: list = field(default_factory=list)     # for prefix-kind
+    q_has_relation: bool = False
+    q_tokens_set: set[str] = field(default_factory=set)
+    # Self-reference rescue: when query proper noun is a known user name,
+    # candidates with first-person markers are accepted as matches even
+    # without the literal name. Fixes EN→RU "Where does Алексей live?" →
+    # "Я живу в Киеве".
+    user_names: set[str] = field(default_factory=set)
+    query_has_user_name: bool = False
+    # Self-intent: query like "Кто я", "Where do I live", "what's my name"
+    # — first-person question. Boost first-person candidates.
+    has_self_intent: bool = False
+
+
+def prepare_query_features(
     query: str,
-    event: Any,            # pmb.core.events.Event
-    base_score: float,
     named_entities: Optional[set[str]] = None,
     vocab_bridges: Optional[dict[str, list[str]]] = None,
-) -> float:
-    """Apply all PAMVR boost rules to a base score. Returns the new score.
+    user_names: Optional[set[str]] = None,
+) -> _QueryFeatures:
+    """Precompute all query-side features for PAMVR. Call ONCE per recall;
+    pass the result to apply_pamvr for each candidate.
 
-    Composition order matters - some boosts amplify others. Empirically
-    tuned on 30-query qualitative bench (60% -> 93.3% top-1, no LoCoMo
-    regression).
-
-    `vocab_bridges` (optional): override the hand-curated VOCAB_BRIDGES with
-    a workspace-mined dict from `pmb.reasoning.vocab_miner`. When set, PAMVR
-    becomes domain-agnostic (auto-adapts to the user's lexicon).
+    Replaces the 4-6 regex/tokenize calls that used to run per candidate.
     """
-    if not query or event is None:
-        return base_score
+    f = _QueryFeatures(query=query, ql=query.lower())
+    f.entities = named_entities or DEFAULT_NAMED_ENTITIES
+    f.bridges = vocab_bridges if vocab_bridges is not None else VOCAB_BRIDGES
+    f.user_names = user_names or set()
 
-    ql = query.lower()
-    ct = (event.content or "").lower()
-    meta = event.metadata or {}
-    score = base_score
-    entities = named_entities or DEFAULT_NAMED_ENTITIES
-    bridges = vocab_bridges if vocab_bridges is not None else VOCAB_BRIDGES
+    # Topic tokens + expansion
+    f.qt = _tokens(query)
+    f.qt_expanded = set(f.qt)
+    for q_term in list(f.qt):
+        if q_term in f.bridges:
+            f.qt_expanded.update(f.bridges[q_term])
 
-    # ---- 1. Topic intersection (penalty for zero overlap) ----
-    qt = _tokens(query)
-    if len(qt) >= 2:
-        qt_expanded = set(qt)
-        for q_term in list(qt):
-            if q_term in bridges:
-                qt_expanded.update(bridges[q_term])
-        n_hit = sum(1 for t in qt_expanded if t in ct)
-        if n_hit == 0:
-            score *= 0.70
+    # Bridges that fire (key in query)
+    for q_term, syns in f.bridges.items():
+        if q_term in f.ql:
+            f.bridges_in_query.append((q_term, syns))
 
-    # ---- 2. Entity strict ----
-    found_entities = [e for e in entities if re.search(rf"\b{e}\b", ql)]
-    if found_entities:
-        if not all(re.search(rf"\b{e}\b", ct) for e in found_entities):
-            score *= 0.55
-        else:
-            score *= 1.20
+    # Entity / proper noun extraction
+    found_entities = [e for e in f.entities if re.search(rf"\b{e}\b", f.ql)]
+    dynamic_proper = _extract_proper_nouns(query)
+    dynamic_proper -= {e.lower() for e in found_entities}
+    f.all_proper = list(found_entities) + list(dynamic_proper)
+    f.proper_lower = [e.lower() for e in f.all_proper]
+    # Pre-compile entity regexes — these were rebuilt per candidate before.
+    f.proper_patterns = [
+        re.compile(rf"\b{re.escape(e)}\b", re.IGNORECASE)
+        for e in f.all_proper
+    ]
+    # Self-reference rescue check
+    if f.user_names:
+        f.query_has_user_name = any(
+            p.lower() in f.user_names for p in f.proper_lower
+        )
 
-    # ---- 3. Verb match ----
-    query_verb = _query_main_verb(query)
-    verb_hit = False
-    if query_verb:
-        verb_hit = _verb_match(query_verb, ct)
-        if verb_hit:
-            score *= 1.25
+    # Verb features
+    f.query_verb = _query_main_verb(query)
+    if f.query_verb:
+        f.verb_stems = set(VERB_SYNS.get(f.query_verb, {f.query_verb}))
+        f.topic_tokens = f.qt - {f.query_verb}
+        f.topic_expanded = set(f.topic_tokens)
+        for q_term in list(f.topic_tokens):
+            if q_term in f.bridges:
+                f.topic_expanded.update(f.bridges[q_term])
 
-    # ---- 4. Verb + topic combo (both signals agree) ----
-    if query_verb and verb_hit:
-        topic_tokens = qt - {query_verb}
-        if topic_tokens:
-            topic_expanded = set(topic_tokens)
-            for q_term in list(topic_tokens):
-                if q_term in bridges:
-                    topic_expanded.update(bridges[q_term])
-            if any(t in ct for t in topic_expanded):
-                score *= 1.50
+    # Intent flags (cheap regex ONCE)
+    f.has_use_verb = bool(re.search(r"\b(?:use|used|using)\b", f.ql))
+    f.has_policy_intent = bool(
+        re.search(r"\b(?:policy|rule|convention|guideline)\b", f.ql)
+    )
+    f.has_time_intent = bool(re.search(
+        r"\b(?:lifetime|duration|long|age|expires|expiry|valid for|"
+        r"how (?:long|old))\b", f.ql,
+    ))
+    f.has_now_intent = bool(
+        re.search(r"\bnow\b|\bcurrent(?:ly)?\b|\btoday\b", f.ql)
+    )
+    f.has_quant_intent = bool(re.search(
+        r"\b(?:how (?:many|long|much|big|sized?)|"
+        r"what(?:'?s)? (?:the )?(?:lifetime|size|budget|count|"
+        r"number|cost|rate))\b", f.ql,
+    ))
+    f.has_team_intent = bool(re.search(
+        r"\bwho (?:is|are) (?:on|in) the\b|"
+        r"\bwho are\b|"
+        r"\bteam consists\b|"
+        r"\bwho(?:'?s)? (?:in|on) (?:the )?team\b", f.ql,
+    ))
 
-    # ---- 5. Use-verb expansion (use → deploy/host/run) ----
-    if re.search(r"\b(?:use|used|using)\b", ql):
-        if re.search(r"\b(?:use|used|using|deploy|deployed|host|hosted|"
-                     r"run on|running|production on)\b", ct):
-            score *= 1.25
-
-    # ---- 6. Keyword AND ----
-    if len(qt) >= 2:
-        n_hit = sum(1 for t in qt if t in ct)
-        if n_hit == 0:
-            score *= 0.92
-        else:
-            ratio = n_hit / len(qt)
-            if ratio >= 0.9:
-                score *= 1.5
-            else:
-                score *= (1.0 + 0.3 * ratio)
-
-    # ---- 7. Vocab bridge ----
-    bridges_total = 0
-    bridges_hit = 0
-    for q_term, syns in bridges.items():
-        if q_term in ql:
-            bridges_total += 1
-            if q_term in ct or any(s in ct for s in syns):
-                bridges_hit += 1
-    if bridges_total > 0:
-        if bridges_hit == bridges_total:
-            score *= 1.35
-        else:
-            score *= (1.0 + 0.15 * (bridges_hit / bridges_total))
-
-    # ---- 8. Prefix kind ----
-    kind = meta.get("activity_kind") or meta.get("kind") or ""
-    for pat, kinds, prefixes in [
-        (r"\bfix\b|\bfixed\b|\bpatch", ("fix", "hotfix"), ["fix:"]),
-        (r"\bbug\b", ("bug",), ["bug found", "bug:"]),
-        (r"\bdecided\b|\bdecision\b", ("decision", "decided", "agreed"),
-         ["decided", "decision:"]),
-    ]:
-        if re.search(pat, ql):
-            if kind in kinds:
-                score *= 1.30
-                break
-            if any(ct.startswith(p) for p in prefixes):
-                score *= 1.25
-                break
-
-    # ---- 9. Policy intent ----
-    if re.search(r"\b(?:policy|rule|convention|guideline)\b", ql):
-        if kind in ("decision", "agreed", "policy") or re.search(
-            r"\benforce\b|\bmust\b|\bgoing forward\b|\bratified\b|"
-            r"\bnever\b|\balways\b", ct,
-        ):
-            score *= 1.30
-
-    # ---- 10. Topic constraint (X policy → X must be in content) ----
+    # Topic constraint extraction (X-policy → expect X in content)
     m = re.search(
         r"\b((?:\w+\s+){0,3}\w+)\s+(?:policy|rule|plan|decision|approach|"
-        r"strategy|convention)\b", ql,
+        r"strategy|convention)\b", f.ql,
     )
     if m:
         topic_words = [w for w in m.group(1).split() if w not in _STOP
@@ -266,20 +346,198 @@ def apply_pamvr(
                                      "his", "her"}]
         if topic_words:
             topic = topic_words[-1]
-            topic_terms = {topic} | set(bridges.get(topic, []))
-            if any(t in ct for t in topic_terms):
-                score *= 1.40
+            f.policy_topic_terms = {topic} | set(f.bridges.get(topic, []))
+
+    # Self-intent: first-person query about user themselves
+    f.has_self_intent = bool(re.search(
+        r"\b(?:кто я|where (?:do|am) i|what(?:'?s)? my name|"
+        r"what do i (?:do|like|prefer)|где я (?:живу|работаю|был|была)|"
+        r"коли я|де я (?:живу|працюю|був|була)|"
+        r"мой\s+\w+|моя\s+\w+|мои\s+\w+|"
+        r"мій\s+\w+|моя\s+\w+|мої\s+\w+)\b",
+        f.ql,
+    ))
+
+    # Relation marker presence
+    RELATION_MARKERS = {
+        "друг", "друга", "другу", "подруга", "подруги",
+        "жена", "жены", "муж", "мужа", "сестра", "сестры",
+        "брат", "брата", "сын", "сына", "дочь", "дочери",
+        "friend", "friends", "wife", "husband", "sister",
+        "brother", "son", "daughter",
+    }
+    f.q_tokens_set = set(re.findall(r"[a-zа-яёіїєґ']+", f.ql))
+    f.q_has_relation = bool(f.q_tokens_set & RELATION_MARKERS)
+
+    # Fix/bug/decision query kinds
+    for pat, kinds, prefixes in [
+        (r"\bfix\b|\bfixed\b|\bpatch", ("fix", "hotfix"), ["fix:"]),
+        (r"\bbug\b", ("bug",), ["bug found", "bug:"]),
+        (r"\bdecided\b|\bdecision\b", ("decision", "decided", "agreed"),
+         ["decided", "decision:"]),
+    ]:
+        if re.search(pat, f.ql):
+            f.fix_pat_kinds.append((kinds, prefixes))
+
+    return f
+
+
+# First-person markers — used by self-reference rescue
+_FIRST_PERSON_RE = re.compile(
+    r"\b(?:я|меня|мне|мной|i|i'm|im|i've|my|myself|мене|мені|мною)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_first_person(text: str) -> bool:
+    if not text:
+        return False
+    return bool(_FIRST_PERSON_RE.search(text))
+
+
+# Relation markers — used at apply time too
+_RELATION_MARKERS = {
+    "друг", "друга", "другу", "подруга", "подруги",
+    "жена", "жены", "муж", "мужа", "сестра", "сестры",
+    "брат", "брата", "сын", "сына", "дочь", "дочери",
+    "friend", "friends", "wife", "husband", "sister",
+    "brother", "son", "daughter",
+}
+
+
+def apply_pamvr(
+    query: str,
+    event: Any,            # pmb.core.events.Event
+    base_score: float,
+    named_entities: Optional[set[str]] = None,
+    vocab_bridges: Optional[dict[str, list[str]]] = None,
+    query_features: Optional[_QueryFeatures] = None,
+) -> float:
+    """Apply all PAMVR boost rules to a base score. Returns the new score.
+
+    Pass `query_features` (from `prepare_query_features`) for ~3× faster
+    per-candidate processing. Without it, features are recomputed per
+    candidate (slow, but kept for backward compatibility).
+    """
+    if not query or event is None:
+        return base_score
+
+    # Use precomputed features when available, else build them on the spot.
+    f = query_features or prepare_query_features(
+        query, named_entities=named_entities, vocab_bridges=vocab_bridges,
+    )
+
+    ct = (event.content or "").lower()
+    meta = event.metadata or {}
+    score = base_score
+
+    # ---- 1. Topic intersection (penalty for zero overlap) ----
+    if len(f.qt) >= 2:
+        n_hit = sum(1 for t in f.qt_expanded if t in ct)
+        if n_hit == 0:
+            score *= 0.70
+
+    # ---- 3. Verb match (moved BEFORE entity strict so it can rescue) ----
+    verb_hit = False
+    if f.query_verb:
+        verb_hit = any(s in ct for s in f.verb_stems)
+        if verb_hit:
+            score *= 1.25
+
+    # ---- 2. Entity strict (uses precompiled regexes) ----
+    # Three-tier match logic:
+    #   (a) literal entity present in content → strong boost
+    #   (b) self-reference rescue — query proper noun IS the user's name
+    #       AND candidate has first-person marker (я/I/мене) → match
+    #       Closes "Where does Алексей live?" → "Я живу в Киеве" gap.
+    #   (c) verb+topic rescue — no entity but verb match + topic overlap
+    #       → soft demote (not a hard miss)
+    #   (d) otherwise → hard penalty
+    if f.all_proper:
+        matched_in_content = all(
+            pat.search(ct) for pat in f.proper_patterns
+        )
+        if matched_in_content:
+            score *= 1.20
+        elif f.query_has_user_name and _has_first_person(ct):
+            # (b) self-reference rescue: e.g. user is Алексей, query asks
+            # about Алексей, candidate is "Я живу в Киеве" — match.
+            score *= 1.10
+        elif not (verb_hit and f.topic_tokens
+                  and any(t in ct for t in f.topic_expanded)):
+            # (d) no entity AND no rescue → still penalise
+            score *= 0.55
+        else:
+            # (c) verb+topic rescued — gentle nudge down only
+            score *= 0.90
+
+    # ---- 4. Verb + topic combo (both signals agree) ----
+    if f.query_verb and verb_hit and f.topic_tokens:
+        if any(t in ct for t in f.topic_expanded):
+            score *= 1.50
+
+    # ---- 5. Use-verb expansion (use → deploy/host/run) ----
+    if f.has_use_verb:
+        if re.search(r"\b(?:use|used|using|deploy|deployed|host|hosted|"
+                     r"run on|running|production on)\b", ct):
+            score *= 1.25
+
+    # ---- 6. Keyword AND ----
+    if len(f.qt) >= 2:
+        n_hit = sum(1 for t in f.qt if t in ct)
+        if n_hit == 0:
+            score *= 0.92
+        else:
+            ratio = n_hit / len(f.qt)
+            if ratio >= 0.9:
+                score *= 1.5
             else:
-                score *= 0.55
+                score *= (1.0 + 0.3 * ratio)
+
+    # ---- 7. Vocab bridge (uses precomputed list) ----
+    if f.bridges_in_query:
+        bridges_hit = 0
+        for q_term, syns in f.bridges_in_query:
+            if q_term in ct or any(s in ct for s in syns):
+                bridges_hit += 1
+        bridges_total = len(f.bridges_in_query)
+        if bridges_hit == bridges_total:
+            score *= 1.35
+        else:
+            score *= (1.0 + 0.15 * (bridges_hit / bridges_total))
+
+    # ---- 8. Prefix kind ----
+    kind = meta.get("activity_kind") or meta.get("kind") or ""
+    for kinds, prefixes in f.fix_pat_kinds:
+        if kind in kinds:
+            score *= 1.30
+            break
+        if any(ct.startswith(p) for p in prefixes):
+            score *= 1.25
+            break
+
+    # ---- 9. Policy intent ----
+    if f.has_policy_intent:
+        if kind in ("decision", "agreed", "policy") or re.search(
+            r"\benforce\b|\bmust\b|\bgoing forward\b|\bratified\b|"
+            r"\bnever\b|\balways\b", ct,
+        ):
+            score *= 1.30
+
+    # ---- 10. Topic constraint (X policy → X must be in content) ----
+    if f.policy_topic_terms:
+        if any(t in ct for t in f.policy_topic_terms):
+            score *= 1.40
+        else:
+            score *= 0.55
 
     # ---- 11. Time duration ----
-    if re.search(r"\b(?:lifetime|duration|long|age|expires|expiry|valid for|"
-                 r"how (?:long|old))\b", ql):
+    if f.has_time_intent:
         if _TIME_DURATION_RE.search(event.content or ""):
             score *= 1.40
 
     # ---- 12. Now / current ----
-    if re.search(r"\bnow\b|\bcurrent(?:ly)?\b|\btoday\b", ql):
+    if f.has_now_intent:
         if re.search(r"\bnow\b|\bcurrent(?:ly)?\b|\bfully\b|\bas of\b", ct):
             score *= 1.30
         elif re.search(r"\bpreviously\b|\bformer(?:ly)?\b|\bused to\b|"
@@ -289,21 +547,33 @@ def apply_pamvr(
             score *= 0.90
 
     # ---- 13. Quantitative ----
-    if re.search(r"\b(?:how (?:many|long|much|big|sized?)|"
-                 r"what(?:'?s)? (?:the )?(?:lifetime|size|budget|count|"
-                 r"number|cost|rate))\b", ql):
+    if f.has_quant_intent:
         if re.search(r"\d", event.content or ""):
             score *= 1.15
 
+    # ---- 13b. Relation-marker disambiguation ----
+    # Cheap per-candidate: split ct into tokens once, check intersection.
+    if f.all_proper and f.q_has_relation:
+        ct_tokens = set(re.findall(r"[a-zа-яёіїєґ']+", ct))
+        c_has_relation = bool(ct_tokens & _RELATION_MARKERS)
+        if c_has_relation:
+            score *= 1.25
+        else:
+            score *= 0.80
+
     # ---- 14. Entity count (collective who-questions) ----
-    if re.search(r"\bwho (?:is|are) (?:on|in) the\b|"
-                 r"\bwho are\b|"
-                 r"\bteam consists\b|"
-                 r"\bwho(?:'?s)? (?:in|on) (?:the )?team\b", ql):
-        n_persons = sum(1 for p in entities if re.search(rf"\b{p}\b", ct))
+    if f.has_team_intent:
+        n_persons = sum(1 for p in f.entities
+                        if re.search(rf"\b{p}\b", ct))
         if n_persons >= 3:
             score *= 1.40
         elif n_persons >= 2:
             score *= 1.15
+
+    # ---- 15. Self-intent: first-person question → boost first-person
+    # facts. Closes "Кто я", "где я живу" → "Я живу в Киеве" gap that
+    # PAMVR otherwise misses because "я" is a stop-word.
+    if f.has_self_intent and _has_first_person(ct):
+        score *= 1.30
 
     return score

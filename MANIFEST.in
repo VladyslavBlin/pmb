@@ -1,0 +1,44 @@
+# Files to include in `python -m build` source distribution (sdist).
+# Wheel uses `pyproject.toml` setuptools.packages.find — this is just
+# for sdist completeness.
+
+include README.md
+include LICENSE
+include NOTICE
+include CHANGELOG.md
+include CITATION.cff
+include CODE_OF_CONDUCT.md
+include CONTRIBUTING.md
+include SECURITY.md
+include pyproject.toml
+include Makefile
+
+# Documentation
+recursive-include docs *.md
+# Logo + screenshots referenced by README.md (rendered on PyPI page)
+recursive-include docs/assets *.png *.css
+
+# Test files for downstream packagers who want to verify the install
+recursive-include tests *.py
+include tests/conftest.py
+
+# Package data
+recursive-include src/pmb py.typed
+recursive-include src/pmb/dashboard/static *
+
+# Exclude development artefacts
+global-exclude __pycache__
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude .DS_Store
+global-exclude Thumbs.db
+global-exclude *.swp
+global-exclude .gitignore
+prune .venv
+prune .git
+prune .github
+prune scripts/benchmarks/_test_*.py
+prune docs/assets/_capture_server.py
+prune docs/assets/_save_png.py
+prune docs/assets/*.html
+prune .claude

@@ -359,33 +359,27 @@ def build_server(
     engine = Engine(workspace=workspace)
 
     if prewarm:
-        # Improvement W + LL: async full-pipeline prewarm. Server responds
-        # to MCP handshake IMMEDIATELY (no 50s block on cold load).
-        # Background thread JIT-compiles EVERY hot path so the first real
-        # recall is ~200ms instead of 500-700ms:
-        #   1. embed() — single query path (sentence-transformers JIT)
-        #   2. embed_batch() — batch path (used by record_batch)
-        #   3. LanceDB vector search — first query against the table
-        #   4. BM25 query — first BM25 scoring
-        #   5. Reranker dummy (if enabled) — cross-encoder JIT
+        # Async prewarm with readiness state. The MCP transport (initialize
+        # handshake) responds INSTANTLY because nothing blocks server boot.
+        # Tools that need the heavy model (recall) check engine.is_warm()
+        # at call time. If warming, they return BM25-only results with a
+        # `warming_up: true` flag instead of timing out the client.
+        #
+        # This is the production-friendly version: a Codex/Claude client
+        # with strict startup timeouts gets a snappy server, and the user
+        # gets degraded-but-fast first results that the agent can show
+        # while waiting for the full pipeline to be ready.
         import threading
 
-        def _async_warmup():
+        # Stage 1 — critical path (model + LanceDB import). Runs in BG.
+        def _stage1_async():
             try:
-                # 1. Single embed
-                vec = engine.search.embed("warmup query for prewarm pipeline")
+                vec = engine.search.embed(
+                    "warmup query for prewarm pipeline"
+                )
             except Exception:
                 return
             try:
-                # 2. Batch embed (different code path)
-                engine.search.embed_batch([
-                    "warmup batch item one",
-                    "warmup batch item two",
-                ])
-            except Exception:
-                pass
-            try:
-                # 3. LanceDB vector search (warms vector index path)
                 _ = (
                     engine.search._table.search(vec.tolist())
                     .metric("cosine")
@@ -395,25 +389,36 @@ def build_server(
             except Exception:
                 pass
             try:
-                # 4. Full hybrid search via the public API — exercises
-                # BM25, fusion, and scoring on a real query
                 engine.search.search(
                     "warmup hybrid search query", top_k=3,
                     importance_map={}, timestamp_map={},
                 )
             except Exception:
                 pass
+            # Stage 2 — batch embed + reranker JIT
             try:
-                # 5. Reranker prewarm if enabled
+                engine.search.embed_batch([
+                    "warmup batch item one",
+                    "warmup batch item two",
+                ])
+            except Exception:
+                pass
+            try:
                 if engine.config.get("recall.rerank"):
                     rr = engine.search.reranker
                     if rr is not None:
-                        rr.predict([("query", "doc one"), ("query", "doc two")])
+                        rr.predict([
+                            ("query", "doc one"),
+                            ("query", "doc two"),
+                        ])
             except Exception:
                 pass
+            # Mark engine fully warm so tools stop returning the partial flag
+            engine._is_warm = True
+            engine._warmed_at = __import__("time").time()
 
         threading.Thread(
-            target=_async_warmup, daemon=True, name="pmb-prewarm",
+            target=_stage1_async, daemon=True, name="pmb-prewarm",
         ).start()
 
     # Personalize instructions with current date so the LLM knows what "today"

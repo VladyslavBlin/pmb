@@ -472,9 +472,22 @@ class HybridSearch:
 
         Idempotent: subsequent calls after the first successful one are no-ops,
         so search() / add() can call this defensively.
+
+        MCP cold-start fix: a fresh workspace has NO BM25 pickle AND NO
+        LanceDB table. The LanceDB-scan fallback used to trigger
+        `import lancedb` (22s on Windows) just to discover there's nothing
+        to load. We now check the SQLite events count first — if zero,
+        skip the LanceDB step entirely.
         """
         self._bm25_reloaded = True
         if self._load_bm25_cache():
+            return
+        # Cheap check: peek at SQLite to avoid triggering 22s `import lancedb`
+        # for an empty workspace (the common cold-start case in MCP).
+        if self._workspace_has_no_events():
+            self._bm25_ulids = []
+            self._bm25_tokens = []
+            self._bm25 = None
             return
         try:
             tbl = self._table.to_arrow()
@@ -488,6 +501,29 @@ class HybridSearch:
         # Seed the cache so the next process avoids the LanceDB scan
         if self._bm25_ulids:
             self._save_bm25_cache()
+
+    def _workspace_has_no_events(self) -> bool:
+        """Cheap SQLite check to skip the 22s LanceDB import on cold-start
+        for fresh workspaces. Returns True only when we can confirm the
+        events table is empty; conservative on any error (returns False so
+        the existing fallback runs)."""
+        try:
+            import sqlite3 as _sql
+            # Vector path is on a separate path; we look for the events DB
+            # by walking up from vector_path
+            from pathlib import Path
+            vp = Path(self.vector_path)
+            # vector_path looks like <ws_dir>/vector ; events.sqlite is sibling
+            db_path = vp.parent / "events.sqlite"
+            if not db_path.exists():
+                return True  # nothing at all → trivially empty
+            with _sql.connect(str(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM events"
+                ).fetchone()
+            return int(row[0] or 0) == 0
+        except Exception:
+            return False
 
     def _ensure_bm25(self):
         if self._bm25 is None and self._bm25_tokens:

@@ -297,6 +297,17 @@ def main():
         ing_seconds = time.time() - t_ing
         print(f"  ingested {n_turns} events ({args.chunk_by}-chunked) in {ing_seconds:.1f}s")
 
+        # Hardening: with the unified _embed_or_defer path, writes may be
+        # deferred while the model is still loading. Block here so the
+        # vector index is fully consistent before evaluation — otherwise
+        # we'd measure with a half-built index and under-report recall.
+        try:
+            drain = eng.wait_for_embed_queue(timeout_seconds=120.0)
+            if drain.get("timeout"):
+                print(f"  WARN: embed queue drain timeout: {drain}")
+        except Exception:
+            pass
+
         # PMB v2: reflection + causation extraction (LLM-driven, in 'sleep')
         if args.reflect:
             t_refl = time.time()

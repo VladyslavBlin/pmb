@@ -187,7 +187,13 @@ _STOPWORDS = {
 }
 
 
-_CONCEPT_RE = re.compile(r"\b[a-z][a-z0-9_]{3,}\b")
+# Hardening (H5): Unicode-aware concept matcher. The previous `[a-z]…`
+# regex silently dropped every Cyrillic, Greek, accented Latin etc. word —
+# which meant the entity-graph layer was effectively single-lingual even
+# though the embedder / BM25 already handle 50+ languages. `\w` with
+# re.UNICODE matches any letter or digit in any script; `\d` is excluded
+# from the head so pure-numeric tokens don't enter the graph.
+_CONCEPT_RE = re.compile(r"(?u)\b[^\W\d_]\w{3,}\b", re.UNICODE)
 
 
 def extract_file_paths(text: str) -> list[str]:

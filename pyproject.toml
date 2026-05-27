@@ -41,6 +41,9 @@ dependencies = [
     "typer>=0.15",
     "rich>=14.0",
     "pyyaml>=6.0",
+    # `pmb connect codex` writes Codex's TOML config; stdlib `tomllib`
+    # only reads, so we need this external writer.
+    "tomli-w>=1.0",
 ]
 
 [project.optional-dependencies]

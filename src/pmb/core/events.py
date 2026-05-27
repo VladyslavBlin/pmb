@@ -261,6 +261,12 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     )
 
 
+# Safe SQLite IN(...) chunk size. SQLite default
+# `SQLITE_MAX_VARIABLE_NUMBER` is 999 pre-3.32, 32766 newer; we stay well
+# under both. Used by `get_many` and any future bulk fetch.
+_GET_MANY_CHUNK = 500
+
+
 class EventStore:
     """SQLite-based event store. Thread-safe через connection-per-call pattern."""
 
@@ -359,20 +365,37 @@ class EventStore:
         Batched fetch by ulid list. Returns {ulid: Event} map.
 
         Avoids the O(N) scan when ranking only needs a few candidate rows.
+
+        Hardening (H6): chunks the IN(...) into batches of `_GET_MANY_CHUNK`
+        so we never trip SQLITE_MAX_VARIABLE_NUMBER (default 999 pre-3.32,
+        32766 newer). Recall on a workspace with a dense graph + large
+        top_k can otherwise pile up >1000 candidate ulids in one shot.
         """
         if not ulids:
             return {}
+        # Dedup while preserving order — caller might pass duplicates
+        seen: set[str] = set()
+        unique: list[str] = []
+        for u in ulids:
+            if u not in seen:
+                seen.add(u)
+                unique.append(u)
+
+        out: dict[str, Event] = {}
         with self._conn() as conn:
-            placeholders = ",".join("?" * len(ulids))
-            sql = f"SELECT * FROM events WHERE ulid IN ({placeholders})"
-            params: list = list(ulids)
-            if workspace_id is not None:
-                sql += " AND workspace_id = ?"
-                params.append(workspace_id)
-            if only_active:
-                sql += " AND archived_at IS NULL"
-            rows = conn.execute(sql, params).fetchall()
-            return {r["ulid"]: Event.from_db_row(r) for r in rows}
+            for chunk_start in range(0, len(unique), _GET_MANY_CHUNK):
+                chunk = unique[chunk_start: chunk_start + _GET_MANY_CHUNK]
+                placeholders = ",".join("?" * len(chunk))
+                sql = f"SELECT * FROM events WHERE ulid IN ({placeholders})"
+                params: list = list(chunk)
+                if workspace_id is not None:
+                    sql += " AND workspace_id = ?"
+                    params.append(workspace_id)
+                if only_active:
+                    sql += " AND archived_at IS NULL"
+                for r in conn.execute(sql, params).fetchall():
+                    out[r["ulid"]] = Event.from_db_row(r)
+        return out
 
     def list_active(self, workspace_id: str, limit: int = 100,
                     event_type: Optional[str] = None) -> list[Event]:

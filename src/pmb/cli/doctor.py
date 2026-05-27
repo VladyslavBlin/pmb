@@ -231,12 +231,47 @@ def mcp_remote_config_hint(remote: str) -> dict:
     )
 
 
+def check_multilingual_model() -> dict:
+    """P1-2: warn when an English-only embedding model is in use on a
+    workspace whose contents are mostly non-Latin. The most common
+    failure mode for integrators who override the default model for
+    speed without realising their data is multilingual.
+    """
+    try:
+        from pmb.workspace import detect_workspace
+        from pmb.config import Config
+        from pmb.health.multilingual_check import evaluate
+        ws = detect_workspace()
+        ws.ensure_dirs()
+        cfg = Config(workspace_dir=ws.storage_dir, pmb_home=ws.pmb_home)
+        model = (
+            cfg.get("embedding.fastembed_model")
+            if cfg.get("embedding.backend") == "fastembed"
+            else cfg.get("embedding.model")
+        )
+        result = evaluate(ws.db_path, model)
+        if result["severity"] == "ok":
+            return {
+                "status": "ok",
+                "msg": f"model `{model}` looks appropriate for content "
+                       f"({int(result['non_latin_ratio'] * 100)}% non-Latin, "
+                       f"sampled {result['n_sampled']} events)",
+            }
+        msg = result["warning"] or "multilingual concern"
+        if result.get("recommendation"):
+            msg += " " + result["recommendation"].replace("\n", " ")
+        return {"status": "warn", "msg": msg}
+    except Exception as e:
+        return {"status": "ok", "msg": f"(skipped: {type(e).__name__})"}
+
+
 def run_doctor(remote: Optional[str] = None) -> list[tuple[str, dict]]:
     """Run all checks. Returns list of (label, result_dict)."""
     checks: list[tuple[str, dict]] = [
         ("Python", check_python()),
         ("Dependencies", check_deps()),
         ("Embedding model cache", check_embedding_model()),
+        ("Multilingual fit", check_multilingual_model()),
         ("PMB_HOME", check_pmb_home()),
         ("Git", check_git()),
         ("Consolidation backend", check_consolidation_backend()),
