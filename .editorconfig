@@ -1,0 +1,67 @@
+# EditorConfig — keeps editor settings consistent across contributors.
+# https://editorconfig.org/
+#
+# Most IDEs auto-detect this file (VS Code, PyCharm, Vim, etc.).
+# No plugin needed for most modern editors.
+
+root = true
+
+# ----------------------------------------------------------------
+# Defaults for every file in the repo.
+# ----------------------------------------------------------------
+[*]
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+charset = utf-8
+indent_style = space
+indent_size = 4
+
+# ----------------------------------------------------------------
+# Python — PEP 8 standard.
+# ----------------------------------------------------------------
+[*.py]
+indent_style = space
+indent_size = 4
+max_line_length = 100
+
+# ----------------------------------------------------------------
+# YAML / JSON / TOML — 2-space convention.
+# ----------------------------------------------------------------
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.json]
+indent_style = space
+indent_size = 2
+
+[*.toml]
+indent_style = space
+indent_size = 4
+
+# ----------------------------------------------------------------
+# Markdown — preserve trailing whitespace (it's a line break).
+# ----------------------------------------------------------------
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
+
+# ----------------------------------------------------------------
+# Makefile — TABS are syntactically required.
+# ----------------------------------------------------------------
+[Makefile]
+indent_style = tab
+
+# ----------------------------------------------------------------
+# Shell scripts.
+# ----------------------------------------------------------------
+[*.{sh,bash}]
+indent_style = space
+indent_size = 2
+
+# ----------------------------------------------------------------
+# Windows-only batch files keep CRLF.
+# ----------------------------------------------------------------
+[*.{bat,cmd}]
+end_of_line = crlf

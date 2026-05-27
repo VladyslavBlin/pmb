@@ -1,0 +1,81 @@
+# Dependabot — auto-PR weekly updates for pip + GitHub Actions.
+#
+# Why: a memory-storage tool that ships on PyPI MUST stay on top of
+# CVE-disclosed dependency versions (transformers/torch/sentence-
+# transformers all have a history of finding security advisories
+# weekly). Manual `pip list --outdated` drift = months of stale deps.
+#
+# Behaviour:
+#   - Mondays 06:00 UTC, weekly cadence.
+#   - Groups patch + minor updates into a single PR per ecosystem so
+#     we don't drown in 30 individual bumps.
+#   - Major bumps still get their own PR (intentional — they need
+#     manual review for breaking changes).
+#   - Auto-rebases on conflict so PRs stay mergeable.
+#
+# Approval: still requires a human merge — dependabot only opens PRs,
+# it doesn't push to main. Pair with branch protection / ruleset to
+# require status checks before merge.
+
+version: 2
+updates:
+  # ----------------------------------------------------------------
+  # Python deps from pyproject.toml.
+  # ----------------------------------------------------------------
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Kyiv"
+    open-pull-requests-limit: 10
+    rebase-strategy: "auto"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"
+    groups:
+      python-minor-patch:
+        applies-to: "version-updates"
+        update-types:
+          - "minor"
+          - "patch"
+      python-security:
+        applies-to: "security-updates"
+        update-types:
+          - "minor"
+          - "patch"
+          - "major"
+    ignore:
+      # Torch + transformers majors require active model-side validation.
+      # Let dependabot propose minor/patch; majors handled manually.
+      - dependency-name: "torch"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "transformers"
+        update-types: ["version-update:semver-major"]
+
+  # ----------------------------------------------------------------
+  # GitHub Actions used in .github/workflows/*.yml.
+  # ----------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Kyiv"
+    open-pull-requests-limit: 5
+    rebase-strategy: "auto"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "ci"
+    groups:
+      gha-all:
+        patterns:
+          - "*"
