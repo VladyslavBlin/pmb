@@ -4,7 +4,7 @@
 
 # PMB · Personal Memory Brain
 
-### Local-first persistent memory for AI agents — Claude Code, Cursor, Codex.
+### Local-first persistent memory for AI agents - Claude Code, Cursor, Codex.
 ### 94.5% LoCoMo recall@10 · 70ms p50 · multilingual · Apache 2.0 · zero API keys.
 
 [![PyPI](https://img.shields.io/pypi/v/pmb.svg?logo=pypi&label=pypi)](https://pypi.org/project/pmb/)
@@ -24,11 +24,11 @@
 
 ---
 
-## 📸 Screenshots — every claim above, captured from a real run
+## 📸 Screenshots - every claim above, captured from a real run
 
 <div align="center">
 
-<img src="docs/assets/01_connect.png" width="780" alt="pmb connect — wire memory into Claude Code & Codex"><br>
+<img src="docs/assets/01_connect.png" width="780" alt="pmb connect - wire memory into Claude Code & Codex"><br>
 <sub>One command. Both Claude Code and Codex now share the same workspace.</sub>
 
 <img src="docs/assets/05_locomo.png" width="780" alt="LoCoMo benchmark: 94.5% recall@10"><br>
@@ -37,7 +37,7 @@
 <img src="docs/assets/06_multilingual.png" width="780" alt="Multilingual atomic extraction across English, Spanish, German"><br>
 <sub>25+ regex patterns + multilingual embedder cover 50+ languages out of the box.</sub>
 
-<img src="docs/assets/07_mega.png" width="780" alt="Mega stress test — 900 queries, multi-language, top-10 = 99.2%"><br>
+<img src="docs/assets/07_mega.png" width="780" alt="Mega stress test - 900 queries, multi-language, top-10 = 99.2%"><br>
 <sub>900-query multi-language stress test including cross-lingual pairs. <code>top-10 = 99.2%, p50 = 70ms</code>.</sub>
 
 [More screenshots: `pmb stats`, `pmb recall`, `pmb doctor` ↓](#-screenshots--cli-reference)
@@ -77,7 +77,7 @@ machine restarts. Nothing leaves your disk.
 | **License**                  | Apache 2.0            | Apache 2.0 | Apache 2.0 | Apache 2.0 |
 
 > Numbers for mem0/Letta/Zep are from their own published LoCoMo benchmarks
-> — we have not reproduced them locally. PMB numbers reproduce in one
+> - we have not reproduced them locally. PMB numbers reproduce in one
 > command: `python scripts/benchmarks/benchmark_locomo.py --n-conversations 10`
 > (~6 min, no graders, no LLM, just retrieval scoring).
 
@@ -154,7 +154,7 @@ pmb dashboard      # web UI on http://127.0.0.1:8765
 
 ## 📊 Benchmarks
 
-### 1. LoCoMo (the standard) — 94.5% recall@10
+### 1. LoCoMo (the standard) - 94.5% recall@10
 
 LoCoMo is the multi-session benchmark from Snap Research: 10 conversations × ~199 QA pairs each, cited by mem0, Letta, and Zep in their papers.
 
@@ -176,7 +176,7 @@ python scripts/benchmarks/benchmark_locomo.py --n-conversations 10
 
 Latency: p50 ranges 65-95 ms across conversations, p95 96-142 ms.
 
-### 2. Mega stress test — 900 queries, multi-language, all features on
+### 2. Mega stress test - 900 queries, multi-language, all features on
 
 A harder bench than LoCoMo: 30 base queries × 30 paraphrases each, mixing
 **English coding**, **Russian personal**, **Ukrainian personal**, and
@@ -234,7 +234,7 @@ MCP first recall on EMPTY workspace         <50 ms             SQL count short-c
 MCP first recall AFTER `pmb warmup`         <100 ms            model + LanceDB + BM25 all preloaded
 ```
 
-`import lancedb` (~22 s on Windows) is now **fully deferred** — read-only
+`import lancedb` (~22 s on Windows) is now **fully deferred** - read-only
 CLI commands never pay it, and the MCP server uses an async prewarm that
 returns boot in ~4 s instead of blocking 45 s.
 
@@ -252,7 +252,7 @@ python scripts/benchmarks/perf_bench.py                             # latency / 
 ## 🌍 Multilingual
 
 PMB ships the multilingual `paraphrase-multilingual-MiniLM-L12-v2`
-embedder by default — covering **50+ languages**. The recall pipeline
+embedder by default - covering **50+ languages**. The recall pipeline
 (PAMVR, atomic fact extraction, auto-vocab bridges) adds explicit regex
 patterns for the common ones (English, plus two Cyrillic-script languages
 for our integrator's domain), and falls back to embedder-only matching
@@ -325,21 +325,21 @@ Multilingual fit  │ warn  │ Workspace has 81% non-Latin chars but uses
 
 ---
 
-## 📸 Screenshots — CLI reference
+## 📸 Screenshots - CLI reference
 
 <div align="center">
 
-<img src="docs/assets/02_stats.png" width="700" alt="pmb stats — workspace overview"><br><br>
-<img src="docs/assets/03_recall.png" width="700" alt="pmb recall — hybrid search from the shell"><br><br>
-<img src="docs/assets/04_doctor.png" width="700" alt="pmb doctor — health check with multilingual warning">
+<img src="docs/assets/02_stats.png" width="700" alt="pmb stats - workspace overview"><br><br>
+<img src="docs/assets/03_recall.png" width="700" alt="pmb recall - hybrid search from the shell"><br><br>
+<img src="docs/assets/04_doctor.png" width="700" alt="pmb doctor - health check with multilingual warning">
 
 </div>
 
 ---
 
-## 📊 Web Dashboard — `pmb dashboard`
+## 📊 Web Dashboard - `pmb dashboard`
 
-Launch the local web UI at `http://127.0.0.1:8765` — no auth, no cloud,
+Launch the local web UI at `http://127.0.0.1:8765` - no auth, no cloud,
 just a window into your memory:
 
 ```bash
@@ -348,15 +348,15 @@ pmb dashboard
 
 <div align="center">
 
-<img src="docs/assets/08_dashboard.png" width="900" alt="PMB Dashboard — overview"><br>
+<img src="docs/assets/08_dashboard.png" width="900" alt="PMB Dashboard - overview"><br>
 <sub>Overview tab: total events, active / pinned / archived counts, entity graph stats.</sub><br><br>
 
-<img src="docs/assets/09_dashboard_events.png" width="900" alt="PMB Dashboard — Events tab"><br>
+<img src="docs/assets/09_dashboard_events.png" width="900" alt="PMB Dashboard - Events tab"><br>
 <sub>Events tab: timeline of recorded facts, activities, decisions. Each row is sortable.</sub><br><br>
 
-<img src="docs/assets/10_dashboard_recall.png" width="900" alt="PMB Dashboard — Recall Debug tab"><br>
+<img src="docs/assets/10_dashboard_recall.png" width="900" alt="PMB Dashboard - Recall Debug tab"><br>
 <sub>Recall Debug tab: test any query against the workspace, see the ranked
-results with PAMVR score breakdown — useful for tuning <code>recall.*</code> knobs.</sub>
+results with PAMVR score breakdown - useful for tuning <code>recall.*</code> knobs.</sub>
 
 </div>
 
