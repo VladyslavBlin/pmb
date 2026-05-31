@@ -34,7 +34,11 @@ from pathlib import Path
 _NAME_PATTERNS = [
     re.compile(r"\bменя\s+зовут\s+(?P<name>[А-ЯЁA-Z][\w]+)", re.IGNORECASE),
     re.compile(r"\bмене\s+звати\s+(?P<name>[А-ЯЁІЇЄҐA-Z][\w]+)", re.IGNORECASE),
+    # Assistant integrations often store normalized facts in third person.
+    re.compile(r"\b(?:пользователя|юзера)\s+зовут\s+(?P<name>[А-ЯЁA-Z][\w]+)", re.IGNORECASE),
+    re.compile(r"\b(?:користувача|юзера)\s+звати\s+(?P<name>[А-ЯЁІЇЄҐA-Z][\w]+)", re.IGNORECASE),
     re.compile(r"\bmy\s+name\s+is\s+(?P<name>[A-Z][\w]+)", re.IGNORECASE),
+    re.compile(r"\buser\s+(?:is\s+)?(?:named|called)\s+(?P<name>[A-Z][\w]+)", re.IGNORECASE),
     re.compile(r"\bi\s+am\s+(?P<name>[A-Z][a-z]{2,})\b"),
     re.compile(r"\bI'?m\s+(?P<name>[A-Z][a-z]{2,})\b"),
     re.compile(r"\buser'?s?\s+name\s+is\s+(?P<name>[A-Z][\w]+)", re.IGNORECASE),
